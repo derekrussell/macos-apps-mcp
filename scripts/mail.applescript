@@ -71,97 +71,54 @@ on sanitise_field(str)
 end sanitise_field
 
 
--- Level 1: Check one mailbox by name; recurse into its children if not found.
-on search_mailbox(mailboxName, mbx)
+-- Build a unique, account-qualified path for a mailbox by walking up its
+-- container chain to the account, e.g. "iCloud/Church/Transactions".
+-- A parent mailbox reports class "container"; the account does not, which
+-- is how we know when to stop climbing. Necessary because several mailboxes
+-- share a leaf name (e.g. three separate "Transactions" boxes).
+on mailbox_path(mbx)
     tell application "Mail"
-        if name of mbx is mailboxName then return mbx
-        set subList to mailboxes of mbx
-        if (count of subList) > 0 then
-            return my find_mailbox_by_name(mailboxName, subList)
-        end if
-        return missing value
-    end tell
-end search_mailbox
-
-
--- Level 2: Iterate a list of mailboxes, delegating to search_mailbox.
-on find_mailbox_by_name(mailboxName, mbxList)
-    tell application "Mail"
-        repeat with mbx in mbxList
-            set found to my search_mailbox(mailboxName, mbx)
-            if found is not missing value then return found
+        set pathStr to name of mbx
+        set c to container of mbx
+        repeat while (class of c) is container
+            set pathStr to (name of c) & "/" & pathStr
+            set c to container of c
         end repeat
-        return missing value
+        return (name of c) & "/" & pathStr
     end tell
-end find_mailbox_by_name
+end mailbox_path
 
 
--- Level 3: Search across all accounts. Returns inbox directly for "inbox".
+-- Resolve a mailbox from its account-qualified path (as produced by
+-- mailbox_path and returned by list_mailboxes). "inbox" is accepted as a
+-- shortcut for the unified inbox. "mailboxes of acct" already returns every
+-- mailbox flat, including nested ones, so no recursion is needed.
 on resolve_mailbox(mailboxName)
     tell application "Mail"
         if mailboxName is "inbox" then return inbox
         repeat with acct in every account
-            set found to my find_mailbox_by_name(mailboxName, mailboxes of acct)
-            if found is not missing value then return found
+            repeat with mbx in (mailboxes of acct)
+                if (my mailbox_path(mbx)) is mailboxName then return mbx
+            end repeat
         end repeat
         error "Mailbox not found: " & mailboxName
     end tell
 end resolve_mailbox
 
 
--- Level 1: Search one mailbox for a message by ID; recurse into its children.
-on search_mailbox_for_message(messageId, mbx)
-    tell application "Mail"
-        try
-            set targetMsg to first message of mbx whose message id is messageId
-            return targetMsg
-        end try
-        set subList to mailboxes of mbx
-        if (count of subList) > 0 then
-            return my find_message_in_mailboxes(messageId, subList)
-        end if
-        return missing value
-    end tell
-end search_mailbox_for_message
-
-
--- Level 2: Iterate a list of mailboxes, delegating to search_mailbox_for_message.
-on find_message_in_mailboxes(messageId, mbxList)
-    tell application "Mail"
-        repeat with mbx in mbxList
-            set found to my search_mailbox_for_message(messageId, mbx)
-            if found is not missing value then return found
-        end repeat
-        return missing value
-    end tell
-end find_message_in_mailboxes
-
-
--- Level 3: Search across all accounts.
+-- Find a message by its RFC 2822 Message-ID across every mailbox.
 on find_message(messageId)
     tell application "Mail"
         repeat with acct in every account
-            set found to my find_message_in_mailboxes(messageId, mailboxes of acct)
-            if found is not missing value then return found
+            repeat with mbx in (mailboxes of acct)
+                try
+                    return (first message of mbx whose message id is messageId)
+                end try
+            end repeat
         end repeat
         error "Message not found: " & messageId
     end tell
 end find_message
-
-
--- Level 1: Format one mailbox as name|count and recurse into its children.
-on collect_mailbox(mbx)
-    tell application "Mail"
-        set output to (name of mbx) & "|" & ((count of messages of mbx) as text) & linefeed
-        set subList to mailboxes of mbx
-        if (count of subList) > 0 then
-            repeat with subMbx in subList
-                set output to output & (my collect_mailbox(subMbx))
-            end repeat
-        end if
-        return output
-    end tell
-end collect_mailbox
 
 
 -- Public handlers
@@ -226,13 +183,15 @@ end get_messages
 
 
 -- Return all mailboxes across all accounts with their message counts.
--- Output is pipe-delimited: name|count
+-- Output is pipe-delimited: path|count, where path is account-qualified
+-- (e.g. "iCloud/Church/Transactions"). "mailboxes of acct" already returns
+-- every mailbox flat, so each appears exactly once with no recursion.
 on list_mailboxes()
     tell application "Mail"
         set output to ""
         repeat with acct in every account
-            repeat with mbx in mailboxes of acct
-                set output to output & (my collect_mailbox(mbx))
+            repeat with mbx in (mailboxes of acct)
+                set output to output & (my mailbox_path(mbx)) & "|" & ((count of messages of mbx) as text) & linefeed
             end repeat
         end repeat
         return output

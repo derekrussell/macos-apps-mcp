@@ -1,23 +1,31 @@
 """Apple Mail tools for the MCP server.
 
-Exposes four tools that let the client read, organise, and delete
+Exposes seven tools that let the client read, organise, and delete
 emails in Apple Mail via AppleScript:
 
-  mail_get_unread   — List unread messages in the inbox
-  mail_get_body     — Fetch the full plain-text body of a message
-  mail_move         — Move a message to the named mailbox
-  mail_delete       — Move a message to the Trash
+  mail_get_messages    — List messages in a mailbox, with pagination
+  mail_count_messages  — Count messages in a mailbox
+  mail_list_mailboxes  — List all mailboxes with their message counts
+  mail_get_body        — Fetch the full plain-text body of a message
+  mail_move            — Move a message to another mailbox
+  mail_delete          — Move a message to the Trash
+  mail_delete_mailbox  — Permanently delete a mailbox and its contents
 
 AppleScript is invoked via osascript, passing scripts/mail.applescript
 as the script file and an action keyword as the first argument. All
-four actions are handled by a single script file to keep scripts/
+actions are handled by a single script file to keep the scripts/
 directory tidy.
 
 Note:
   Message IDs used by these tools are RFC 2822 Message-IDs (the
   value of the Message-ID header), not internal Apple Mail indices.
-  Always use the id field returned by mail_get_unread when calling
-  the other three tools.
+  Always use the id field returned by mail_get_messages when calling
+  the other tools.
+
+  Mailboxes are addressed by their account-qualified path, e.g.
+  "iCloud/Church/Transactions", exactly as returned by
+  mail_list_mailboxes. This disambiguates mailboxes that share a
+  leaf name. Pass "inbox" as a shortcut for the unified inbox.
 """
 
 import asyncio
@@ -48,7 +56,7 @@ TOOLS: list[Tool] = [
             "date, and is_read. "
             "Defaults to all messages in the inbox. Set unread_only to "
             "true to filter to unread messages only. Set mailbox to query "
-            "a different mailbox by name. "
+            "a different mailbox by its account-qualified path. "
             "Page through large mailboxes by incrementing offset by count "
             "until has_more is false."
         ),
@@ -72,7 +80,7 @@ TOOLS: list[Tool] = [
                 },
                 "mailbox": {
                     "type": "string",
-                    "description": "Name of the mailbox to query. Defaults to the inbox."
+                    "description": "Account-qualified mailbox path from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions'), or 'inbox'. Defaults to the inbox."
                 },
             },
             "required": [],
@@ -84,7 +92,7 @@ TOOLS: list[Tool] = [
             "Return the total number of messages in an Apple Mail mailbox. "
             "Defaults to all messages in the inbox. Set unread_only to true "
             "to count only unread messages. Set mailbox to query a different "
-            "mailbox by name. "
+            "mailbox by its account-qualified path. "
             "Call this before mail_get_messages when processing large "
             "mailboxes to determine how many batches are needed."
         ),
@@ -98,7 +106,7 @@ TOOLS: list[Tool] = [
                 },
                 "mailbox": {
                     "type": "string",
-                    "description": "Name of the mailbox to query. Defaults to the inbox."
+                    "description": "Account-qualified mailbox path from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions'), or 'inbox'. Defaults to the inbox."
                 },
             },
             "required": [],
@@ -108,8 +116,11 @@ TOOLS: list[Tool] = [
         name="mail_list_mailboxes",
         description=(
             "List all mailboxes in Apple Mail with the message count for each. "
-            "Use this to discover existing mailboxes before moving messages "
-            "or planning an organisational structure."
+            "Returns a JSON array where each element has path and count. The "
+            "path is account-qualified (e.g. 'iCloud/Church/Transactions') and "
+            "is the exact value to pass as the mailbox argument to other mail "
+            "tools. Use this to discover existing mailboxes before moving "
+            "messages or planning an organisational structure."
         ),
         inputSchema={
             "type": "object",
@@ -138,7 +149,7 @@ TOOLS: list[Tool] = [
     Tool(
         name="mail_move",
         description=(
-            "Move an Apple Mail message to a named mailbox. "
+            "Move an Apple Mail message to another mailbox. "
             "Searches all mailboxes for the message. "
             "The destination mailbox must already exist in Apple Mail."
         ),
@@ -151,7 +162,7 @@ TOOLS: list[Tool] = [
                 },
                 "mailbox": {
                     "type": "string",
-                    "description": "Exact name of the destination mailbox."
+                    "description": "Account-qualified path of the destination mailbox from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions')."
                 },
             },
             "required": ["message_id", "mailbox"],
@@ -178,16 +189,16 @@ TOOLS: list[Tool] = [
     Tool(
         name="mail_delete_mailbox",
         description=(
-            "Permanently delete a named mailbox and all messages it contains. "
+            "Permanently delete a mailbox and all messages it contains. "
             "This cannot be undone. "
-            "Use mail_list_mailboxes to confirm the mailbox name before calling this."
+            "Use mail_list_mailboxes to confirm the mailbox path before calling this."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "mailbox": {
                     "type": "string",
-                    "description": "Exact name of the mailbox to delete."
+                    "description": "Account-qualified path of the mailbox to delete from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions')."
                 },
             },
             "required": ["mailbox"],
@@ -225,7 +236,11 @@ async def _run_script(action: str, *args: str) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
         raise RuntimeError(
@@ -233,7 +248,9 @@ async def _run_script(action: str, *args: str) -> str:
             f"{stderr.decode().strip()}"
         )
 
-    return stdout.decode().strip()
+    # Normalise line endings so splitlines() does not treat a stray CR as a
+    # record boundary and shift fields (mirrors the reminders/notes tools).
+    return stdout.decode().replace('\r\n', '\n').replace('\r', '\n').strip()
 
 
 async def _get_messages(
@@ -333,10 +350,13 @@ async def _list_mailboxes() -> list[dict]:
 
     Calls the AppleScript list_mailboxes action, which returns one
     pipe-delimited record per mailbox in the form:
-        <name>|<count>
+        <path>|<count>
+
+    The path is account-qualified (e.g. "iCloud/Church/Transactions")
+    and is the value callers pass back as the mailbox argument.
 
     Returns:
-        A list of dicts, each with keys: name, count.
+        A list of dicts, each with keys: path, count.
         Returns an empty list if no mailboxes are found.
     """
     raw = await _run_script("list_mailboxes")
@@ -346,12 +366,12 @@ async def _list_mailboxes() -> list[dict]:
 
     mailboxes = []
     for line in raw.splitlines():
-        # Each record is pipe-delimited: name|count
-        parts = line.split("|", maxsplit=1)
+        # Each record is pipe-delimited: path|count
+        parts = line.rsplit("|", maxsplit=1)
         if len(parts) == 2:
-            name, count = parts
+            path, count = parts
             mailboxes.append({
-                "name": name,
+                "path": path,
                 "count": int(count),
             })
     return mailboxes
