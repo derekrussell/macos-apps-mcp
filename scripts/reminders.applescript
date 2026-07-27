@@ -53,6 +53,16 @@ on format_reminder(rem, listName)
     tell application "Reminders"
         set remId to id of rem
         set remTitle to name of rem
+        if remTitle contains linefeed then
+            set AppleScript's text item delimiters to linefeed
+            set remTitle to (text items of remTitle) as text
+            set AppleScript's text item delimiters to ""
+        end if
+        if remTitle contains return then
+            set AppleScript's text item delimiters to return
+            set remTitle to (text items of remTitle) as text
+            set AppleScript's text item delimiters to ""
+        end if
         if remTitle contains "|" then
             set AppleScript's text item delimiters to "|"
             set remTitle to (text items of remTitle) as text
@@ -62,6 +72,11 @@ on format_reminder(rem, listName)
         if body of rem is not missing value then set remNotes to body of rem
         if remNotes contains linefeed then
             set AppleScript's text item delimiters to linefeed
+            set remNotes to (text items of remNotes) as text
+            set AppleScript's text item delimiters to ""
+        end if
+        if remNotes contains return then
+            set AppleScript's text item delimiters to return
             set remNotes to (text items of remNotes) as text
             set AppleScript's text item delimiters to ""
         end if

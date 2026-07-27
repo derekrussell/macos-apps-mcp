@@ -257,7 +257,7 @@ async def _run_script(action: str, *args: str) -> str:
             f"{stderr.decode().strip()}"
         )
 
-    return stdout.decode().strip()
+    return stdout.decode().replace('\r\n', '\n').replace('\r', '\n').strip()
 
 
 def _parse_reminder(line: str) -> dict | None:
