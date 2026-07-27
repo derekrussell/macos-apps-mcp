@@ -45,7 +45,7 @@ end run
 
 
 -- Utilities
-������������������������������������������������������������
+-- ------------------------------------------------------------
 
 -- Format a reminder record as a pipe-delimited line.
 -- Output: id|title|due_date|notes|is_completed|list
@@ -141,7 +141,7 @@ end reminder_matches
 
 
 -- Public handlers
-������������������������������������������������������������
+-- ------------------------------------------------------------
 
 -- Return all reminder lists with their reminder counts.
 -- Output is pipe-delimited: name|count
