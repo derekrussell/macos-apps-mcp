@@ -50,12 +50,22 @@ end run
 -- Must be called with "my" from inside tell blocks so it runs in script scope,
 -- ensuring text item delimiters resolve as an AppleScript language construct.
 on sanitise_field(str)
+    -- Replace each delimiter/newline character with a space. The split
+    -- (text items) and join (as text) must use DIFFERENT delimiters:
+    -- splitting and joining on the same delimiter is a no-op.
+    set str to str as text
     set AppleScript's text item delimiters to "|"
-    set str to (text items of str) as text
+    set theItems to text items of str
+    set AppleScript's text item delimiters to " "
+    set str to theItems as text
     set AppleScript's text item delimiters to linefeed
-    set str to (text items of str) as text
+    set theItems to text items of str
+    set AppleScript's text item delimiters to " "
+    set str to theItems as text
     set AppleScript's text item delimiters to return
-    set str to (text items of str) as text
+    set theItems to text items of str
+    set AppleScript's text item delimiters to " "
+    set str to theItems as text
     set AppleScript's text item delimiters to ""
     return str
 end sanitise_field
