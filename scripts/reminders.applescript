@@ -49,28 +49,37 @@ end run
 
 -- Format a reminder record as a pipe-delimited line.
 -- Output: id|title|due_date|notes|is_completed|list
-on format_reminder(rem, listName)
-    -- Fetch all properties inside the tell block.
+-- `props` is a local properties record (already fetched in bulk by the
+-- caller), NOT a live reminder reference. Reading its labelled fields
+-- needs the Reminders terminology, hence the tell block, but because the
+-- record is local it costs no Apple-event round-trip.
+on format_reminder(props, listName)
     tell application "Reminders"
-        set remId to id of rem
-        set remTitle to name of rem
-        set remNotes to ""
-        if body of rem is not missing value then set remNotes to body of rem
-        set remCompleted to completion date of rem is not missing value
-        set remDueDate to ""
-        if due date of rem is not missing value then
-            set remDueDate to my format_date(due date of rem)
-        end if
+        set remId to id of props
+        set remName to name of props
+        set remBody to body of props
+        set remDue to due date of props
+        set remDone to completed of props
     end tell
 
-    if remCompleted then
+    set remTitle to my sanitise_field(remName)
+
+    if remBody is missing value then
+        set remNotes to ""
+    else
+        set remNotes to my sanitise_field(remBody)
+    end if
+
+    set remDueDate to ""
+    if remDue is not missing value then set remDueDate to my format_date(remDue)
+
+    if remDone then
         set remCompletedStr to "true"
     else
         set remCompletedStr to "false"
     end if
-    set remTitle to sanitise_field(remTitle)
-    set remNotes to sanitise_field(remNotes)
-    return remId & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
+
+    return (remId as text) & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
 end format_reminder
 
 
@@ -138,19 +147,21 @@ end find_reminder
 
 
 -- Return true if a reminder matches the search query and filter.
-on reminder_matches(rem, searchQuery, includeCompleted)
+-- `props` is a local properties record (fetched in bulk by the caller).
+on reminder_matches(props, searchQuery, includeCompleted)
     tell application "Reminders"
-        -- Guard: skip completed reminders if not including them.
-        if includeCompleted is "false" and completion date of rem is not missing value then
-            return false
-        end if
-        set remTitle to name of rem
-        set remNotes to ""
-        if body of rem is not missing value then set remNotes to body of rem
-        ignoring case
-            return remTitle contains searchQuery or remNotes contains searchQuery
-        end ignoring
+        set remDone to completed of props
+        set remName to name of props
+        set remBody to body of props
     end tell
+
+    -- Guard: skip completed reminders if not including them.
+    if includeCompleted is "false" and remDone then return false
+
+    if remBody is missing value then set remBody to ""
+    ignoring case
+        return remName contains searchQuery or remBody contains searchQuery
+    end ignoring
 end reminder_matches
 
 
@@ -177,34 +188,43 @@ end list_lists
 -- Subsequent lines are pipe-delimited: id|title|due_date|notes|is_completed|list
 on get_reminders(listName, batchCount, batchOffset, includeCompleted)
     set targetList to resolve_list(listName)
+
+    -- Fetch every reminder's full properties in a SINGLE Apple event, then
+    -- filter and paginate locally. The `whose completed is false` clause and
+    -- per-reminder property reads both cost one round-trip per reminder,
+    -- which times out on large lists (e.g. a 1000+ item grocery list).
     tell application "Reminders"
         set lstName to name of targetList
-        if includeCompleted is "true" then
-            set allReminders to reminders of targetList
-        else
-            set allReminders to (reminders of targetList whose completed is false)
-        end if
-
-        set totalCount to count of allReminders
-        set output to (totalCount as text) & linefeed
-
-        if totalCount is 0 then return output
-
-        -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
-        set startIdx to batchOffset + 1
-        if startIdx > totalCount then return output
-
-        set endIdx to batchOffset + batchCount
-        if endIdx > totalCount then set endIdx to totalCount
-
-        set batchReminders to items startIdx thru endIdx of allReminders
-
-        repeat with rem in batchReminders
-            set output to output & (my format_reminder(rem, lstName))
-        end repeat
-
-        return output
+        set allProps to properties of (reminders of targetList)
     end tell
+
+    if includeCompleted is "true" then
+        set wanted to allProps
+    else
+        set wanted to {}
+        tell application "Reminders"
+            repeat with p in allProps
+                if not (completed of p) then set end of wanted to contents of p
+            end repeat
+        end tell
+    end if
+
+    set totalCount to count of wanted
+    set output to (totalCount as text) & linefeed
+    if totalCount is 0 then return output
+
+    -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
+    set startIdx to batchOffset + 1
+    if startIdx > totalCount then return output
+
+    set endIdx to batchOffset + batchCount
+    if endIdx > totalCount then set endIdx to totalCount
+
+    repeat with i from startIdx to endIdx
+        set output to output & (my format_reminder(item i of wanted, lstName))
+    end repeat
+
+    return output
 end get_reminders
         
 
@@ -212,17 +232,24 @@ end get_reminders
 -- Output is pipe-delimited: id|title|due_date|notes|is_completed|list
 on search_reminders(searchQuery, includeCompleted)
     tell application "Reminders"
-        set output to ""
-        repeat with lst in every list
-            set lstName to name of lst
-            repeat with rem in reminders of lst
-                if my reminder_matches(rem, searchQuery, includeCompleted) then
-                    set output to output & (my format_reminder(rem, lstName))
-                end if
-            end repeat
-        end repeat
-        return output
+        set allLists to every list
     end tell
+
+    set output to ""
+    repeat with lst in allLists
+        -- One bulk Apple event per list, then match/format locally.
+        tell application "Reminders"
+            set lstName to name of lst
+            set allProps to properties of (reminders of lst)
+        end tell
+        repeat with p in allProps
+            set pc to contents of p
+            if my reminder_matches(pc, searchQuery, includeCompleted) then
+                set output to output & (my format_reminder(pc, lstName))
+            end if
+        end repeat
+    end repeat
+    return output
 end search_reminders
 
 
