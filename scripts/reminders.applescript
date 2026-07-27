@@ -53,8 +53,23 @@ on format_reminder(rem, listName)
     tell application "Reminders"
         set remId to id of rem
         set remTitle to name of rem
+        if remTitle contains "|" then
+            set AppleScript's text item delimiters to "|"
+            set remTitle to (text items of remTitle) as text
+            set AppleScript's text item delimiters to ""
+        end if
         set remNotes to ""
         if body of rem is not missing value then set remNotes to body of rem
+        if remNotes contains linefeed then
+            set AppleScript's text item delimiters to linefeed
+            set remNotes to (text items of remNotes) as text
+            set AppleScript's text item delimiters to ""
+        end if
+        if remNotes contains "|" then
+            set AppleScript's text item delimiters to "|"
+            set remNotes to (text items of remNotes) as text
+            set AppleScript's text item delimiters to ""
+        end if
         set remCompleted to completion date of rem is not missing value
         if remCompleted then
             set remCompletedStr to "true"
@@ -63,7 +78,8 @@ on format_reminder(rem, listName)
         end if
         set remDueDate to ""
         if due date of rem is not missing value then
-            set remDueDate to (due date of rem) as text
+            set epochSeconds to (due date of rem) - (date "1 January 1970 00:00:00")
+            set remDueDate to do shell script "date -r " & epochSeconds & " +\"%Y-%m-%dT%H:%M:%S\""
         end if
         return remId & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
     end tell
