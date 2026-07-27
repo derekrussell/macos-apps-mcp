@@ -50,53 +50,38 @@ end run
 -- Format a reminder record as a pipe-delimited line.
 -- Output: id|title|due_date|notes|is_completed|list
 on format_reminder(rem, listName)
+    -- Fetch all properties inside the tell block.
     tell application "Reminders"
         set remId to id of rem
         set remTitle to name of rem
-        if remTitle contains linefeed then
-            set AppleScript's text item delimiters to linefeed
-            set remTitle to (text items of remTitle) as text
-            set AppleScript's text item delimiters to ""
-        end if
-        if remTitle contains return then
-            set AppleScript's text item delimiters to return
-            set remTitle to (text items of remTitle) as text
-            set AppleScript's text item delimiters to ""
-        end if
-        if remTitle contains "|" then
-            set AppleScript's text item delimiters to "|"
-            set remTitle to (text items of remTitle) as text
-            set AppleScript's text item delimiters to ""
-        end if
         set remNotes to ""
         if body of rem is not missing value then set remNotes to body of rem
-        if remNotes contains linefeed then
-            set AppleScript's text item delimiters to linefeed
-            set remNotes to (text items of remNotes) as text
-            set AppleScript's text item delimiters to ""
-        end if
-        if remNotes contains return then
-            set AppleScript's text item delimiters to return
-            set remNotes to (text items of remNotes) as text
-            set AppleScript's text item delimiters to ""
-        end if
-        if remNotes contains "|" then
-            set AppleScript's text item delimiters to "|"
-            set remNotes to (text items of remNotes) as text
-            set AppleScript's text item delimiters to ""
-        end if
         set remCompleted to completion date of rem is not missing value
-        if remCompleted then
-            set remCompletedStr to "true"
-        else
-            set remCompletedStr to "false"
-        end if
         set remDueDate to ""
         if due date of rem is not missing value then
             set remDueDate to my format_date(due date of rem)
         end if
-        return remId & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
     end tell
+
+    -- Sanitise user-controlled fields outside the tell block.
+    -- text item delimiters is unreliable inside a tell application block.
+    if remCompleted then
+        set remCompletedStr to "true"
+    else
+        set remCompletedStr to "false"
+    end if
+    set AppleScript's text item delimiters to "|"
+    set remTitle to (text items of remTitle) as text
+    set remNotes to (text items of remNotes) as text
+    set AppleScript's text item delimiters to linefeed
+    set remTitle to (text items of remTitle) as text
+    set remNotes to (text items of remNotes) as text
+    set AppleScript's text item delimiters to return
+    set remTitle to (text items of remTitle) as text
+    set remNotes to (text items of remNotes) as text
+    set AppleScript's text item delimiters to ""
+
+    return remId & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
 end format_reminder
 
 
@@ -183,12 +168,7 @@ on get_reminders(listName, batchCount, batchOffset, includeCompleted)
         if includeCompleted is "true" then
             set allReminders to reminders of targetList
         else
-            set allReminders to {}
-            repeat with rem in reminders of targetList
-                if completion date of rem is missing value then
-                    set end of allReminders to rem
-                end if
-            end repeat
+            set allReminders to (reminders of targetList whose completed is false)
         end if
 
         set totalCount to count of allReminders
