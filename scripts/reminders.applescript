@@ -45,7 +45,7 @@ end run
 
 
 -- Utilities
-ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 
 -- Format a reminder record as a pipe-delimited line.
 -- Output: id|title|due_date|notes|is_completed|list
@@ -78,12 +78,28 @@ on format_reminder(rem, listName)
         end if
         set remDueDate to ""
         if due date of rem is not missing value then
-            set epochSeconds to (due date of rem) - (date "1 January 1970 00:00:00")
-            set remDueDate to do shell script "date -r " & epochSeconds & " +\"%Y-%m-%dT%H:%M:%S\""
+            set remDueDate to my format_date(due date of rem)
         end if
         return remId & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
     end tell
 end format_reminder
+
+
+-- Format a date as ISO 8601 (YYYY-MM-DDTHH:MM:SS) without shell invocation.
+on format_date(theDate)
+    set y to year of theDate as text
+    set mo to month of theDate as integer
+    set d to day of theDate as integer
+    set h to hours of theDate
+    set mi to minutes of theDate
+    set s to seconds of theDate
+    if mo < 10 then set mo to "0" & mo
+    if d < 10 then set d to "0" & d
+    if h < 10 then set h to "0" & h
+    if mi < 10 then set mi to "0" & mi
+    if s < 10 then set s to "0" & s
+    return y & "-" & mo & "-" & d & "T" & h & ":" & mi & ":" & s
+end format_date
 
 
 -- Find a reminder list by name, or return the default list.
@@ -125,7 +141,7 @@ end reminder_matches
 
 
 -- Public handlers
-ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½
 
 -- Return all reminder lists with their reminder counts.
 -- Output is pipe-delimited: name|count

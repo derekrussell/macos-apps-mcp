@@ -245,7 +245,11 @@ async def _run_script(action: str, *args: str) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
         raise RuntimeError(
