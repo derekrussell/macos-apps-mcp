@@ -136,7 +136,12 @@ on get_reminders(listName, batchCount, batchOffset, includeCompleted)
         if includeCompleted is "true" then
             set allReminders to reminders of targetList
         else
-            set allReminders to (reminders of targetList whose completion date is missing value)
+            set allReminders to {}
+            repeat with rem in reminders of targetList
+                if completion date of rem is missing value then
+                    set end of allReminders to rem
+                end if
+            end repeat
         end if
 
         set totalCount to count of allReminders
