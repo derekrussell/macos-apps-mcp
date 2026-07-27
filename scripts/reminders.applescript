@@ -63,26 +63,30 @@ on format_reminder(rem, listName)
         end if
     end tell
 
-    -- Sanitise user-controlled fields outside the tell block.
-    -- text item delimiters is unreliable inside a tell application block.
     if remCompleted then
         set remCompletedStr to "true"
     else
         set remCompletedStr to "false"
     end if
-    set AppleScript's text item delimiters to "|"
-    set remTitle to (text items of remTitle) as text
-    set remNotes to (text items of remNotes) as text
-    set AppleScript's text item delimiters to linefeed
-    set remTitle to (text items of remTitle) as text
-    set remNotes to (text items of remNotes) as text
-    set AppleScript's text item delimiters to return
-    set remTitle to (text items of remTitle) as text
-    set remNotes to (text items of remNotes) as text
-    set AppleScript's text item delimiters to ""
-
+    set remTitle to sanitise_field(remTitle)
+    set remNotes to sanitise_field(remNotes)
     return remId & "|" & remTitle & "|" & remDueDate & "|" & remNotes & "|" & remCompletedStr & "|" & listName & linefeed
 end format_reminder
+
+
+-- Strip pipe and newline characters from a string field.
+-- Must be called with "my" from inside tell blocks so it runs in script scope,
+-- ensuring text item delimiters resolve as an AppleScript language construct.
+on sanitise_field(str)
+    set AppleScript's text item delimiters to "|"
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to linefeed
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to return
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to ""
+    return str
+end sanitise_field
 
 
 -- Format a date as ISO 8601 (YYYY-MM-DDTHH:MM:SS) without shell invocation.

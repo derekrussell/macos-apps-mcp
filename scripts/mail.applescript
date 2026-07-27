@@ -44,7 +44,22 @@ end run
 
 
 -- Utilities
-ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+-- ------------------------------------------------------------
+
+-- Strip pipe and newline characters from a string field.
+-- Must be called with "my" from inside tell blocks so it runs in script scope,
+-- ensuring text item delimiters resolve as an AppleScript language construct.
+on sanitise_field(str)
+    set AppleScript's text item delimiters to "|"
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to linefeed
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to return
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to ""
+    return str
+end sanitise_field
+
 
 -- Level 1: Check one mailbox by name; recurse into its children if not found.
 on search_mailbox(mailboxName, mbx)
@@ -140,7 +155,7 @@ end collect_mailbox
 
 
 -- Public handlers
-ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+-- ------------------------------------------------------------
 
 -- Return the number of messages in the named mailbox.
 -- unreadOnly: "true" to count only unread messages, "false" for all.
@@ -192,7 +207,7 @@ on get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
             else
                 set msgRead to "false"
             end if
-            set output to output & msgId & "|" & msgSubject & "|" & msgSender & "|" & msgDate & "|" & msgRead & linefeed
+            set output to output & msgId & "|" & (my sanitise_field(msgSubject)) & "|" & (my sanitise_field(msgSender)) & "|" & msgDate & "|" & msgRead & linefeed
         end repeat
 
         return output

@@ -39,7 +39,22 @@ on run argv
 end run
 
 -- Utilities
-ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+-- ------------------------------------------------------------
+
+-- Strip pipe and newline characters from a string field.
+-- Must be called with "my" from inside tell blocks so it runs in script scope,
+-- ensuring text item delimiters resolve as an AppleScript language construct.
+on sanitise_field(str)
+    set AppleScript's text item delimiters to "|"
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to linefeed
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to return
+    set str to (text items of str) as text
+    set AppleScript's text item delimiters to ""
+    return str
+end sanitise_field
+
 
 -- Format a note record as a pipe-delimited line.
 -- Output: id|title|folder|modified_date
@@ -51,7 +66,7 @@ on format_note(theNote, folderName)
         if modification date of theNote is not missing value then
             set noteDate to (modification date of theNote) as text
         end if
-        return noteId & "|" & noteTitle & "|" & folderName & "|" & noteDate & linefeed
+        return noteId & "|" & (my sanitise_field(noteTitle)) & "|" & folderName & "|" & noteDate & linefeed
     end tell
 end format_note
 
@@ -88,7 +103,7 @@ end note_matches
 
 
 -- Public handlers
-ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ
+-- ------------------------------------------------------------
 
 -- Return all folders with their note counts.
 -- Output is pipe-delimited: name|count
