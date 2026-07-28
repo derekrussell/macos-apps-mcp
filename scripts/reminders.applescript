@@ -126,23 +126,6 @@ on find_reminder(reminderId)
 end find_reminder
 
 
--- Return true if a reminder matches the search query and filter.
--- `props` is a local properties record (fetched in bulk by the caller).
-on reminder_matches(props, searchQuery, includeCompleted)
-    tell application "Reminders"
-        set remDone to completed of props
-        set remName to name of props
-        set remBody to body of props
-    end tell
-
-    -- Guard: skip completed reminders if not including them.
-    if includeCompleted is "false" and remDone then return false
-
-    if remBody is missing value then set remBody to ""
-    ignoring case
-        return remName contains searchQuery or remBody contains searchQuery
-    end ignoring
-end reminder_matches
 
 
 -- Public handlers
@@ -210,6 +193,12 @@ end get_reminders
 
 -- Search for reminders by text across all lists.
 -- Output is pipe-delimited: id|title|due_date|notes|is_completed|list
+--
+-- Fetching full `properties of (reminders of lst)` for every list serialises
+-- 15+ fields per reminder and times out on large lists (600+ items). Instead
+-- read only the two fields needed to MATCH (name, body) in bulk per list, then
+-- read the heavy output fields (id, due date, completed) for the few matches
+-- only, addressed positionally (bulk field order aligns with `reminder i of`).
 on search_reminders(searchQuery, includeCompleted)
     tell application "Reminders"
         set allLists to every list
@@ -217,15 +206,42 @@ on search_reminders(searchQuery, includeCompleted)
 
     set output to ""
     repeat with lst in allLists
-        -- One bulk Apple event per list, then match/format locally.
         tell application "Reminders"
             set lstName to name of lst
-            set allProps to properties of (reminders of lst)
+            set nameList to name of reminders of lst
+            set bodyList to body of reminders of lst
         end tell
-        repeat with p in allProps
-            set pc to contents of p
-            if my reminder_matches(pc, searchQuery, includeCompleted) then
-                set output to output & (my format_reminder(pc, lstName))
+
+        set n to count of nameList
+        repeat with i from 1 to n
+            set remName to item i of nameList
+            set remBody to item i of bodyList
+            if remBody is missing value then set remBody to ""
+
+            set isMatch to false
+            ignoring case
+                if (remName contains searchQuery) or (remBody contains searchQuery) then set isMatch to true
+            end ignoring
+
+            if isMatch then
+                -- Read the remaining fields for this match only.
+                tell application "Reminders"
+                    set rem to reminder i of lst
+                    set remId to id of rem
+                    set remDone to completed of rem
+                    set remDue to due date of rem
+                end tell
+
+                if (includeCompleted is "true") or (not remDone) then
+                    set dueStr to ""
+                    if remDue is not missing value then set dueStr to util's format_date(remDue)
+                    if remDone then
+                        set doneStr to "true"
+                    else
+                        set doneStr to "false"
+                    end if
+                    set output to output & (remId as text) & "|" & (util's sanitise_field(remName)) & "|" & dueStr & "|" & (util's sanitise_field(remBody)) & "|" & doneStr & "|" & lstName & linefeed
+                end if
             end if
         end repeat
     end repeat
