@@ -14,7 +14,11 @@
 --   delete          <message_id>                   -> (no output)
 --   delete_mailbox  <mailbox>                      -> (no output)
 
+-- Shared handlers (sanitise_field, format_date), loaded once per invocation.
+property util : missing value
+
 on run argv
+    set util to load_utilities()
     set action to item 1 of argv
 
     if action is "count_messages" then
@@ -46,29 +50,17 @@ end run
 -- Utilities
 -- ------------------------------------------------------------
 
--- Strip pipe and newline characters from a string field.
--- Must be called with "my" from inside tell blocks so it runs in script scope,
--- ensuring text item delimiters resolve as an AppleScript language construct.
-on sanitise_field(str)
-    -- Replace each delimiter/newline character with a space. The split
-    -- (text items) and join (as text) must use DIFFERENT delimiters:
-    -- splitting and joining on the same delimiter is a no-op.
-    set str to str as text
-    set AppleScript's text item delimiters to "|"
-    set theItems to text items of str
-    set AppleScript's text item delimiters to " "
-    set str to theItems as text
-    set AppleScript's text item delimiters to linefeed
-    set theItems to text items of str
-    set AppleScript's text item delimiters to " "
-    set str to theItems as text
-    set AppleScript's text item delimiters to return
-    set theItems to text items of str
-    set AppleScript's text item delimiters to " "
-    set str to theItems as text
+-- Load the shared handler library (sanitise_field, format_date) that sits
+-- alongside this script. Resolved relative to this file's own path so it
+-- works regardless of the caller's working directory.
+on load_utilities()
+    set myPosix to POSIX path of (path to me)
+    set AppleScript's text item delimiters to "/"
+    set dirParts to items 1 thru -2 of (text items of myPosix)
+    set utilPath to (dirParts as text) & "/utilities.applescript"
     set AppleScript's text item delimiters to ""
-    return str
-end sanitise_field
+    return (run script (read POSIX file utilPath as «class utf8»))
+end load_utilities
 
 
 -- Build a unique, account-qualified path for a mailbox by walking up its
@@ -174,7 +166,7 @@ on get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
             else
                 set msgRead to "false"
             end if
-            set output to output & msgId & "|" & (my sanitise_field(msgSubject)) & "|" & (my sanitise_field(msgSender)) & "|" & msgDate & "|" & msgRead & linefeed
+            set output to output & msgId & "|" & (my (util's sanitise_field(msgSubject))) & "|" & (my (util's sanitise_field(msgSender))) & "|" & msgDate & "|" & msgRead & linefeed
         end repeat
 
         return output

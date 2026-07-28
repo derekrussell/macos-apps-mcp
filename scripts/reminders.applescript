@@ -15,7 +15,11 @@
 --                                                      -> (no output)
 --   delete         <reminder_id>                       -> (no output)
 
+-- Shared handlers (sanitise_field, format_date), loaded once per invocation.
+property util : missing value
+
 on run argv
+    set util to load_utilities()
     set action to item 1 of argv
 
     if action is "list_lists" then
@@ -62,16 +66,16 @@ on format_reminder(props, listName)
         set remDone to completed of props
     end tell
 
-    set remTitle to my sanitise_field(remName)
+    set remTitle to util's sanitise_field(remName)
 
     if remBody is missing value then
         set remNotes to ""
     else
-        set remNotes to my sanitise_field(remBody)
+        set remNotes to util's sanitise_field(remBody)
     end if
 
     set remDueDate to ""
-    if remDue is not missing value then set remDueDate to my format_date(remDue)
+    if remDue is not missing value then set remDueDate to util's format_date(remDue)
 
     if remDone then
         set remCompletedStr to "true"
@@ -83,46 +87,17 @@ on format_reminder(props, listName)
 end format_reminder
 
 
--- Strip pipe and newline characters from a string field.
--- Must be called with "my" from inside tell blocks so it runs in script scope,
--- ensuring text item delimiters resolve as an AppleScript language construct.
-on sanitise_field(str)
-    -- Replace each delimiter/newline character with a space. The split
-    -- (text items) and join (as text) must use DIFFERENT delimiters:
-    -- splitting and joining on the same delimiter is a no-op.
-    set str to str as text
-    set AppleScript's text item delimiters to "|"
-    set theItems to text items of str
-    set AppleScript's text item delimiters to " "
-    set str to theItems as text
-    set AppleScript's text item delimiters to linefeed
-    set theItems to text items of str
-    set AppleScript's text item delimiters to " "
-    set str to theItems as text
-    set AppleScript's text item delimiters to return
-    set theItems to text items of str
-    set AppleScript's text item delimiters to " "
-    set str to theItems as text
+-- Load the shared handler library (sanitise_field, format_date) that sits
+-- alongside this script. Resolved relative to this file's own path so it
+-- works regardless of the caller's working directory.
+on load_utilities()
+    set myPosix to POSIX path of (path to me)
+    set AppleScript's text item delimiters to "/"
+    set dirParts to items 1 thru -2 of (text items of myPosix)
+    set utilPath to (dirParts as text) & "/utilities.applescript"
     set AppleScript's text item delimiters to ""
-    return str
-end sanitise_field
-
-
--- Format a date as ISO 8601 (YYYY-MM-DDTHH:MM:SS) without shell invocation.
-on format_date(theDate)
-    set y to year of theDate as text
-    set mo to month of theDate as integer
-    set d to day of theDate as integer
-    set h to hours of theDate
-    set mi to minutes of theDate
-    set s to seconds of theDate
-    if mo < 10 then set mo to "0" & mo
-    if d < 10 then set d to "0" & d
-    if h < 10 then set h to "0" & h
-    if mi < 10 then set mi to "0" & mi
-    if s < 10 then set s to "0" & s
-    return y & "-" & mo & "-" & d & "T" & h & ":" & mi & ":" & s
-end format_date
+    return (run script (read POSIX file utilPath as «class utf8»))
+end load_utilities
 
 
 -- Find a reminder list by name, or return the default list.
