@@ -53,7 +53,7 @@ TOOLS: list[Tool] = [
             "Returns a JSON object with: total (count matching the filter), "
             "offset, returned (messages in this batch), has_more, and a "
             "messages array where each element has id, subject, sender, "
-            "date, and is_read. "
+            "date (ISO 8601: YYYY-MM-DDTHH:MM:SS), and is_read. "
             "Defaults to all messages in the inbox. Set unread_only to "
             "true to filter to unread messages only. Set mailbox to query "
             "a different mailbox by its account-qualified path. "
@@ -191,7 +191,10 @@ TOOLS: list[Tool] = [
         description=(
             "Permanently delete a mailbox and all messages it contains. "
             "This cannot be undone. "
-            "Use mail_list_mailboxes to confirm the mailbox path before calling this."
+            "Use mail_list_mailboxes to confirm the mailbox path before calling this. "
+            "Note: Apple Mail often refuses to delete IMAP/iCloud mailboxes via "
+            "AppleScript (the removal must round-trip to the server); if so, this "
+            "returns an error advising manual deletion in Mail.app."
         ),
         inputSchema={
             "type": "object",

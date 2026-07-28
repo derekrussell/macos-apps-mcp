@@ -171,13 +171,16 @@ end search_notes
 
 -- Create a new note in the named folder.
 -- Returns the id of the created note.
+--
+-- Apple Notes has no separate title field: a note's title is the first line
+-- of its body. Passing name and body in a SINGLE properties record lets Notes
+-- compose them consistently (title becomes the first line). Setting the body
+-- in a separate statement after creation would re-derive the title from the
+-- body and silently discard the supplied title.
 on create_note(noteTitle, noteBody, folderName)
     set targetFolder to resolve_folder(folderName)
     tell application "Notes"
-        set newNote to make new note at targetFolder with properties {name: noteTitle}
-        if noteBody is not "" then
-            set body of newNote to noteBody
-        end if
+        set newNote to make new note at targetFolder with properties {name:noteTitle, body:noteBody}
         return id of newNote
     end tell
 end create_note
@@ -185,11 +188,26 @@ end create_note
 
 -- Update the title and/or body of an existing note.
 -- Pass empty string for any field that should not be changed.
+--
+-- Because the title is the note's first body line (see create_note), a body
+-- change must re-compose the body with the title as its first line, otherwise
+-- the title would be lost. On existing notes, `set properties {name, body}`
+-- lets the body win, so the body string is composed explicitly.
 on update_note(noteId, newTitle, newBody)
     set theNote to find_note(noteId)
     tell application "Notes"
-        if newTitle is not "" then set name of theNote to newTitle
-        if newBody is not "" then set body of theNote to newBody
+        if newBody is not "" then
+            -- Keep the current title when none is supplied.
+            if newTitle is "" then
+                set effTitle to name of theNote
+            else
+                set effTitle to newTitle
+            end if
+            set body of theNote to ("<div>" & effTitle & "</div><div>" & newBody & "</div>")
+        else if newTitle is not "" then
+            -- Title-only change: rename without disturbing the body content.
+            set name of theNote to newTitle
+        end if
     end tell
 end update_note
 
