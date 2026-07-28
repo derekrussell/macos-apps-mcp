@@ -66,19 +66,15 @@ on sanitise_field(str)
 end sanitise_field
 
 
--- Format a note record as a pipe-delimited line.
+-- Format a note as a pipe-delimited line from already-fetched primitive
+-- values (id, name, modification date). Callers bulk-fetch these fields
+-- so this handler performs no Apple-event round-trips.
 -- Output: id|title|folder|modified_date
-on format_note(theNote, folderName)
-    tell application "Notes"
-        set noteId to id of theNote
-        set noteTitle to name of theNote
-        set noteDate to ""
-        if modification date of theNote is not missing value then
-            set noteDate to (modification date of theNote) as text
-        end if
-        return noteId & "|" & (my sanitise_field(noteTitle)) & "|" & folderName & "|" & noteDate & linefeed
-    end tell
-end format_note
+on format_note_line(noteId, noteName, noteDate, folderName)
+    set noteDateStr to ""
+    if noteDate is not missing value then set noteDateStr to noteDate as text
+    return (noteId as text) & "|" & (my sanitise_field(noteName)) & "|" & folderName & "|" & noteDateStr & linefeed
+end format_note_line
 
 
 -- Find a Notes folder by name, or return the default folder.
@@ -100,16 +96,6 @@ on find_note(noteId)
         error "Note not found: " & noteId
     end tell
 end find_note
-
-
--- Return true if a note's title or body contains the search query.
-on note_matches(theNote, searchQuery)
-    tell application "Notes"
-        ignoring case
-            return (name of theNote) contains searchQuery or (body of theNote) contains searchQuery
-        end ignoring
-    end tell
-end note_matches
 
 
 -- Public handlers
@@ -136,42 +122,54 @@ on get_notes(folderName, batchCount, batchOffset)
     set targetFolder to resolve_folder(folderName)
     tell application "Notes"
         set fName to name of targetFolder
-        set allNotes to notes of targetFolder
-
-        set totalCount to count of allNotes
-        set output to (totalCount as text) & linefeed
-
-        if totalCount is 0 then return output
-
-        -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
-        set startIdx to batchOffset + 1
-        if startIdx > totalCount then return output
-
-        set endIdx to batchOffset + batchCount
-        if endIdx > totalCount then set endIdx to totalCount
-
-        set batchNotes to items startIdx thru endIdx of allNotes
-
-        repeat with theNote in batchNotes
-            set output to output & (my format_note(theNote, fName))
-        end repeat
-
-        return output
+        set totalCount to count of notes of targetFolder
     end tell
+
+    set output to (totalCount as text) & linefeed
+    if totalCount is 0 then return output
+
+    -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
+    set startIdx to batchOffset + 1
+    if startIdx > totalCount then return output
+
+    set endIdx to batchOffset + batchCount
+    if endIdx > totalCount then set endIdx to totalCount
+
+    -- Fetch only the paginated slice's fields, each as a single bulk Apple
+    -- event, instead of reading id/name/date per note. This keeps the whole
+    -- call to a handful of round-trips regardless of folder size.
+    tell application "Notes"
+        set noteIds to id of (notes startIdx thru endIdx of targetFolder)
+        set noteNames to name of (notes startIdx thru endIdx of targetFolder)
+        set noteDates to modification date of (notes startIdx thru endIdx of targetFolder)
+    end tell
+
+    repeat with i from 1 to count of noteIds
+        set output to output & (my format_note_line(item i of noteIds, item i of noteNames, item i of noteDates, fName))
+    end repeat
+
+    return output
 end get_notes
 
 
--- Search for notes by test across all folders (title and body).
+-- Search for notes by text across all folders (title and body).
 -- Output is pipe-delimited: id|title|folder|modified_date
+--
+-- Matching is pushed into Notes via a `whose` clause (case-insensitive),
+-- so the app returns only the matches. "a reference to" keeps the result a
+-- specifier rather than a list, which lets us bulk-fetch each field in one
+-- Apple event instead of reading id/name/date per note.
 on search_notes(searchQuery)
     tell application "Notes"
         set output to ""
         repeat with theFolder in every folder
             set fName to name of theFolder
-            repeat with theNote in notes of theFolder
-                if my note_matches(theNote, searchQuery) then
-                    set output to output & (my format_note(theNote, fName))
-                end if
+            set matched to a reference to (notes of theFolder whose name contains searchQuery or body contains searchQuery)
+            set noteIds to id of matched
+            set noteNames to name of matched
+            set noteDates to modification date of matched
+            repeat with i from 1 to count of noteIds
+                set output to output & (my format_note_line(item i of noteIds, item i of noteNames, item i of noteDates, fName))
             end repeat
         end repeat
         return output
