@@ -90,7 +90,11 @@ on resolve_mailbox(mailboxName)
         if mailboxName is "inbox" then return inbox
         repeat with acct in every account
             repeat with mbx in (mailboxes of acct)
-                if (my mailbox_path(mbx)) is mailboxName then return mbx
+                -- Return "contents of" the loop variable, not the loop
+                -- variable itself: the latter is a positional reference
+                -- (item N of mailboxes of ...) that becomes stale or resolves
+                -- to the wrong mailbox once used in a later tell block.
+                if (my mailbox_path(mbx)) is mailboxName then return (contents of mbx)
             end repeat
         end repeat
         error "Mailbox not found: " & mailboxName
@@ -160,7 +164,7 @@ on get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
             set msgId to message id of msg
             set msgSubject to subject of msg
             set msgSender to sender of msg
-            set msgDate to date sent of msg as text
+            set msgDate to my (util's format_date(date sent of msg))
             if read status of msg is true then
                 set msgRead to "true"
             else
@@ -220,9 +224,16 @@ end delete_message
 
 
 -- Permanently delete the named mailbox and all its contents.
+-- Note: Mail's AppleScript delete frequently fails for IMAP/iCloud mailboxes
+-- with a generic "-10000" because the removal must round-trip to the server.
+-- Surface a clear, actionable message instead of the cryptic code.
 on delete_mailbox(mailboxName)
     set targetMailbox to resolve_mailbox(mailboxName)
     tell application "Mail"
-        delete targetMailbox
+        try
+            delete targetMailbox
+        on error errMsg number errNum
+            error "Could not delete mailbox '" & mailboxName & "' (" & errNum & "). Mail often refuses to delete IMAP/iCloud mailboxes via AppleScript; delete it manually in Mail.app (right-click the mailbox -> Delete Mailbox)."
+        end try
     end tell
 end delete_mailbox

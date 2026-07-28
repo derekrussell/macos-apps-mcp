@@ -109,14 +109,19 @@ on resolve_list(listName)
 end resolve_list
 
 
--- Find a reminder by its internal id across all lists
+-- Find a reminder by its internal id. Uses a direct `reminder id` reference
+-- (O(1)) rather than scanning every list with a slow `whose id is` clause,
+-- which timed out on large accounts. `get` forces resolution so an unknown
+-- id raises here instead of surfacing a cryptic error at the mutation site.
 on find_reminder(reminderId)
     tell application "Reminders"
-        repeat with lst in every list
-            set matches to (reminders of lst whose id is reminderId)
-            if (count of matches) > 0 then return item 1 of matches
-        end repeat
-        error "Reminder not found: " & reminderId
+        try
+            set rem to reminder id reminderId
+            get name of rem
+            return rem
+        on error
+            error "Reminder not found: " & reminderId
+        end try
     end tell
 end find_reminder
 
@@ -233,14 +238,16 @@ end search_reminders
 -- Pass empty string for due_date or notes to omit them.
 on create_reminder(remTitle, listName, dueDateStr, notes)
     set targetList to resolve_list(listName)
+
+    -- Parse the ISO due date BEFORE the tell block. AppleScript's `date "..."`
+    -- coercion mangles ISO strings, so use the shared component-based parser.
+    set dueProvided to (dueDateStr is not "")
+    if dueProvided then set parsedDue to util's parse_iso_date(dueDateStr)
+
     tell application "Reminders"
-        set newReminder to make new reminder at end of targetList with properties {name: remTitle}
-        if dueDateStr is not "" then
-            set due date of newReminder to date dueDateStr
-        end if
-        if notes is not "" then
-            set body of newReminder to notes
-        end if
+        set newReminder to make new reminder at end of targetList with properties {name:remTitle}
+        if dueProvided then set due date of newReminder to parsedDue
+        if notes is not "" then set body of newReminder to notes
         return id of newReminder
     end tell
 end create_reminder
@@ -256,17 +263,30 @@ end complete_reminder
 
 
 -- Update one or more fields of an existing reminder.
--- Pass empty string for any field that should not be changed.
--- Pass empty string for due date to clear it.
+-- Field arguments are "" to leave a field unchanged. The due date argument
+-- uses a sentinel: "__KEEP__" leaves it unchanged (the Python layer sends this
+-- when the caller omits due_date); any other value is parsed and applied.
+--
+-- Note: Apple Reminders' AppleScript interface cannot clear an existing due
+-- date (setting it to missing value, deleting it, and clearing remind-me date
+-- all error), so an explicit "" is rejected rather than silently ignored.
 on update_reminder(reminderId, newTitle, newDueDate, newNotes, newListName)
+    -- Parse/validate the due date BEFORE mutating anything, so a bad or
+    -- unsupported value cannot leave a half-applied record.
+    set applyDue to false
+    if newDueDate is "__KEEP__" then
+        set applyDue to false
+    else if newDueDate is "" then
+        error "Apple Reminders cannot clear a due date via AppleScript; omit due_date to leave it unchanged."
+    else
+        set parsedDue to util's parse_iso_date(newDueDate)
+        set applyDue to true
+    end if
+
     set rem to find_reminder(reminderId)
     tell application "Reminders"
         if newTitle is not "" then set name of rem to newTitle
-        if newDueDate is "" then
-            set due date of rem to missing value
-        else
-            set due date of rem to date newDueDate
-        end if
+        if applyDue then set due date of rem to parsedDue
         if newNotes is not "" then set body of rem to newNotes
     end tell
     if newListName is not "" then

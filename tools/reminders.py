@@ -62,7 +62,7 @@ TOOLS: list[Tool] = [
             "Fetch reminders from an Apple Reminders list, with pagination. "
             "Returns a JSON object with: total, offset, returned, has_more, "
             "and a reminders array where each element has id, title, "
-            "due_date, notes, and is_completed. "
+            "due_date, notes, is_completed, and list. "
             "Pass list as 'default' to target the user's default list. "
             "Set include_completed to true to include completed reminders."
         ),
@@ -170,8 +170,11 @@ TOOLS: list[Tool] = [
         name="reminder_update",
         description=(
             "Update the title, due date, notes, or list of an existing reminder. "
-            "Only fields that are provided will be changed. "
-            "Pass an empty string for due_date to clear it. "
+            "Only fields that are provided will be changed; omit a field to "
+            "leave it untouched. "
+            "Note: an existing due date cannot be cleared (Apple Reminders' "
+            "AppleScript interface does not support it) — provide a new due_date "
+            "to change it, or omit it to keep it. "
             "Use the id returned by reminder_get or reminder_search."
         ),
         inputSchema={
@@ -187,7 +190,7 @@ TOOLS: list[Tool] = [
                 },
                 "due_date": {
                     "type": "string",
-                    "description": "New due date in ISO 8601 format, or empty string to clear."
+                    "description": "New due date in ISO 8601 format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS). Omit to leave the due date unchanged; it cannot be cleared."
                 },
                 "notes": {
                     "type": "string",
@@ -373,7 +376,9 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
     if name == "reminder_update":
         reminder_id = arguments["reminder_id"]
         title = arguments.get("title", "")
-        due_date = arguments.get("due_date", "")
+        # Distinguish "omitted" (leave unchanged) from an explicit value via a
+        # sentinel, so a title-only update does not touch the due date.
+        due_date = arguments["due_date"] if "due_date" in arguments else "__KEEP__"
         notes = arguments.get("notes", "")
         list_name = arguments.get("list", "")
         await _run_script("update", reminder_id, title, due_date, notes, list_name)

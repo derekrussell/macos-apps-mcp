@@ -38,6 +38,35 @@ script utilLib
         return str
     end sanitise_field
 
+    -- Parse an ISO 8601 string (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) into an
+    -- AppleScript date by building it from components. AppleScript's own
+    -- `date "..."` coercion is locale-dependent and mangles ISO strings
+    -- (e.g. "2026-07-29T09:00:00" becomes 16 January 2035), so never use it.
+    -- `day` is set to 1 before changing month/year to avoid end-of-month
+    -- rollover (e.g. 31 January -> "31 February").
+    on parse_iso_date(isoStr)
+        set y to (text 1 thru 4 of isoStr) as integer
+        set mo to (text 6 thru 7 of isoStr) as integer
+        set d to (text 9 thru 10 of isoStr) as integer
+        set hh to 0
+        set mi to 0
+        set ss to 0
+        if (count of isoStr) ≥ 19 then
+            set hh to (text 12 thru 13 of isoStr) as integer
+            set mi to (text 15 thru 16 of isoStr) as integer
+            set ss to (text 18 thru 19 of isoStr) as integer
+        end if
+        set theDate to current date
+        set day of theDate to 1
+        set year of theDate to y
+        set month of theDate to mo
+        set day of theDate to d
+        set hours of theDate to hh
+        set minutes of theDate to mi
+        set seconds of theDate to ss
+        return theDate
+    end parse_iso_date
+
     -- Format a date as ISO 8601 (YYYY-MM-DDTHH:MM:SS) without shell invocation.
     on format_date(theDate)
         set y to year of theDate as text

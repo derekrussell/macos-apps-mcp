@@ -108,7 +108,9 @@ TOOLS: list[Tool] = [
             "Create a new note in Apple Notes. "
             "Returns the id of the created note. "
             "Pass folder as 'default' to add to the user's default folder. "
-            "Body content is plain text."
+            "Body content is plain text. Note: Apple Notes uses the first line "
+            "of the body as the title, so the title is stored as the note's "
+            "first line followed by the body."
         ),
         inputSchema={
             "type": "object",
@@ -134,8 +136,9 @@ TOOLS: list[Tool] = [
     Tool(
         name="notes_delete",
         description=(
-            "Permanently delete a note from Apple Notes. "
-            "This cannot be undone. "
+            "Delete a note from Apple Notes. This is a soft delete: the note "
+            "is moved to the 'Recently Deleted' folder and can be recovered "
+            "there until it is purged. "
             "Use the id returned by notes_get or notes_search."
         ),
         inputSchema={
@@ -154,7 +157,8 @@ TOOLS: list[Tool] = [
         description=(
             "Update the title and/or body of an existing Apple Notes note. "
             "Only fields that are provided will be changed. "
-            "Body content replaces the entire existing body. "
+            "Body content replaces the entire existing body; the title is kept "
+            "as the note's first line (Apple Notes derives the title from it). "
             "Use the id returned by notes_get or notes_search."
         ),
         inputSchema={
