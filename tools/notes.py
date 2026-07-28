@@ -19,6 +19,9 @@ Note:
     assigned by Apple Notes. Always use the id field returned
     by notes_get or notes_search when calling notes_delete.
 
+    The modified_date field is returned in ISO 8601 format
+    (YYYY-MM-DDTHH:MM:SS), matching the reminders tools.
+
     Pass "default" as the folder name to target the user's default Notes folder without needing to know its name.
 """
 

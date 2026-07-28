@@ -66,13 +66,30 @@ on sanitise_field(str)
 end sanitise_field
 
 
+-- Format a date as ISO 8601 (YYYY-MM-DDTHH:MM:SS) without shell invocation.
+on format_date(theDate)
+    set y to year of theDate as text
+    set mo to month of theDate as integer
+    set d to day of theDate as integer
+    set h to hours of theDate
+    set mi to minutes of theDate
+    set s to seconds of theDate
+    if mo < 10 then set mo to "0" & mo
+    if d < 10 then set d to "0" & d
+    if h < 10 then set h to "0" & h
+    if mi < 10 then set mi to "0" & mi
+    if s < 10 then set s to "0" & s
+    return y & "-" & mo & "-" & d & "T" & h & ":" & mi & ":" & s
+end format_date
+
+
 -- Format a note as a pipe-delimited line from already-fetched primitive
 -- values (id, name, modification date). Callers bulk-fetch these fields
 -- so this handler performs no Apple-event round-trips.
--- Output: id|title|folder|modified_date
+-- Output: id|title|folder|modified_date (date is ISO 8601)
 on format_note_line(noteId, noteName, noteDate, folderName)
     set noteDateStr to ""
-    if noteDate is not missing value then set noteDateStr to noteDate as text
+    if noteDate is not missing value then set noteDateStr to my format_date(noteDate)
     return (noteId as text) & "|" & (my sanitise_field(noteName)) & "|" & folderName & "|" & noteDateStr & linefeed
 end format_note_line
 
