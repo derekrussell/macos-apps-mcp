@@ -100,9 +100,12 @@ TOOLS: list[Tool] = [
             "Search for reminders by text across all Apple Reminders lists. "
             "By default matches against the title only; set search_notes to true "
             "to also match notes/body content. "
-            "Returns a JSON object: {status, count, reminders}, where reminders "
-            "is an array whose elements have id, title, due_date, notes, "
-            "is_completed, and list. "
+            "Returns a JSON object {status, total, offset, returned, has_more, "
+            "reminders}, where reminders is an array whose elements have id, "
+            "title, due_date, notes, is_completed, and list. Results are "
+            "paginated via count/offset (total is the full match count); a broad "
+            "query can match hundreds of reminders, so page through with offset "
+            "when has_more is true. "
             "Default (title) search is served from an in-memory index maintained "
             "in the background for reliability on large accounts. Reminders you "
             "create/update/delete through these tools are reflected immediately; "
@@ -131,6 +134,16 @@ TOOLS: list[Tool] = [
                     "type": "boolean",
                     "description": "If true, also match against each reminder's notes/body. Slower; defaults to false (title-only).",
                     "default": False,
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Maximum number of matches to return in this page.",
+                    "default": 50,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Zero-based index of the first match to return.",
+                    "default": 0,
                 },
             },
             "required": ["query"],
@@ -503,6 +516,8 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         query = arguments["query"]
         include_completed = bool(arguments.get("include_completed", False))
         search_notes = bool(arguments.get("search_notes", False))
+        count = int(arguments.get("count", 50))
+        offset = int(arguments.get("offset", 0))
 
         if search_notes:
             # Opt-in full-text scan (matches notes too). This reads every
@@ -511,46 +526,54 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
             raw = await _run_script(
                 "search", query, str(include_completed).lower(), "true",
             )
-            reminders = [r for r in (_parse_reminder(line)
-                                     for line in raw.splitlines()) if r]
-            return [TextContent(type="text", text=json.dumps({
-                "status": "ok", "count": len(reminders), "reminders": reminders,
-            }, indent=2))]
-
-        if _index_cache is None:
+            matches = [r for r in (_parse_reminder(line)
+                                   for line in raw.splitlines()) if r]
+        elif _index_cache is None:
             # Cold start: no index yet. Trigger a build and tell the caller to
             # retry rather than blocking on a scan that could exceed the client
             # timeout. Startup warm_index() usually makes this branch rare.
             _kick_refresh()
             return [TextContent(type="text", text=json.dumps({
                 "status": "warming",
-                "count": 0,
+                "total": 0,
+                "offset": offset,
+                "returned": 0,
+                "has_more": False,
                 "reminders": [],
                 "message": "Reminder search index is building; retry in a few seconds.",
             }, indent=2))]
+        else:
+            # Serve from the in-memory index immediately; refresh in the
+            # background if it has gone stale (never block the search on a scan).
+            if (time.monotonic() - _index_built_at) >= _INDEX_TTL:
+                _kick_refresh()
+            q = query.lower()
+            matches = []
+            for e in _index_cache:
+                if q not in e["title"].lower():
+                    continue
+                if not include_completed and e["is_completed"]:
+                    continue
+                matches.append({
+                    "id": e["id"],
+                    "title": e["title"],
+                    "due_date": e["due_date"],
+                    "notes": None,
+                    "is_completed": e["is_completed"],
+                    "list": e["list"],
+                })
 
-        # Serve from the in-memory index immediately; refresh in the background
-        # if it has gone stale (never block the search on the scan).
-        if (time.monotonic() - _index_built_at) >= _INDEX_TTL:
-            _kick_refresh()
-
-        q = query.lower()
-        reminders = []
-        for e in _index_cache:
-            if q not in e["title"].lower():
-                continue
-            if not include_completed and e["is_completed"]:
-                continue
-            reminders.append({
-                "id": e["id"],
-                "title": e["title"],
-                "due_date": e["due_date"],
-                "notes": None,
-                "is_completed": e["is_completed"],
-                "list": e["list"],
-            })
+        # Paginate: a broad query can match hundreds of reminders, and an
+        # unbounded response overflows the client's payload limit.
+        total = len(matches)
+        page = matches[offset:offset + count] if count >= 0 else matches[offset:]
         return [TextContent(type="text", text=json.dumps({
-            "status": "ok", "count": len(reminders), "reminders": reminders,
+            "status": "ok",
+            "total": total,
+            "offset": offset,
+            "returned": len(page),
+            "has_more": offset + len(page) < total,
+            "reminders": page,
         }, indent=2))]
 
     if name == "reminder_create":
@@ -558,19 +581,22 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         list_name = arguments.get("list", "default")
         due_date = arguments.get("due_date", "")
         notes = arguments.get("notes", "")
-        reminder_id = await _run_script("create", title, list_name, due_date, notes)
-        # Reflect the new reminder in the index immediately so a create-then-
-        # search finds it, then refresh in the background to reconcile (e.g. the
-        # real list name when "default" was used).
-        _index_add(reminder_id, title, list_name, due_date, False)
-        _kick_refresh()
+        raw = await _run_script("create", title, list_name, due_date, notes)
+        # create returns "id|resolved_list_name"; use the resolved name so the
+        # index carries the real list (e.g. "Reminders") rather than "default".
+        reminder_id, _, resolved_list = raw.partition("|")
+        # Update the index in place so a create-then-search finds the new
+        # reminder immediately. Deliberately do NOT kick a full background
+        # rebuild here: that scan contends with the next mutation's write and
+        # can make it time out. External edits are reconciled by the periodic
+        # refresh a stale search triggers.
+        _index_add(reminder_id, title, resolved_list or list_name, due_date, False)
         return [TextContent(type="text", text=reminder_id)]
 
     if name == "reminder_complete":
         reminder_id = arguments["reminder_id"]
         await _run_script("complete", reminder_id)
         _index_edit(reminder_id, is_completed=True)
-        _kick_refresh()
         return [TextContent(type="text", text=f"Completed {reminder_id!r}.")]
 
     if name == "reminder_update":
@@ -590,14 +616,12 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
             list_name=list_name or None,
             due_date=due_date if due_date not in ("__KEEP__", "") else None,
         )
-        _kick_refresh()
         return [TextContent(type="text", text=f"Updated {reminder_id!r}.")]
 
     if name == "reminder_delete":
         reminder_id = arguments["reminder_id"]
         await _run_script("delete", reminder_id)
         _index_remove(reminder_id)
-        _kick_refresh()
         return [TextContent(type="text", text=f"Deleted {reminder_id!r}.")]
 
     raise ValueError(f"Unknown reminder tool: '{name}'.")
