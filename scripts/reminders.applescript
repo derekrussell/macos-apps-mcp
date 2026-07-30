@@ -8,7 +8,8 @@
 --   list_lists                                         -> name|count\n...
 --   get_reminders  <list> <count> <offset> <include_completed>
 --                                                      -> total\nid|title|due_date|notes|is_completed|list\n...
---   search         <query> <include_completed>         -> id|title|due_date|notes|is_completed|list\n...
+--   search         <query> <include_completed> <search_notes>
+--                                                      -> id|title|due_date|notes|is_completed|list\n...
 --   create         <title> <list> <due_date> <notes>   -> reminder_id
 --   complete       <reminder_id>                       -> (no output)
 --   update         <reminder_id> <title> <due_date> <notes> <list>
@@ -33,7 +34,8 @@ on run argv
     else if action is "search" then
         set searchQuery to item 2 of argv
         set includeCompleted to item 3 of argv
-        return search_reminders(searchQuery, includeCompleted)
+        set searchNotes to item 4 of argv
+        return search_reminders(searchQuery, includeCompleted, searchNotes)
     else if action is "create" then
         return create_reminder(item 2 of argv, item 3 of argv, item 4 of argv, item 5 of argv)
     else if action is "complete" then
@@ -195,11 +197,17 @@ end get_reminders
 -- Output is pipe-delimited: id|title|due_date|notes|is_completed|list
 --
 -- Fetching full `properties of (reminders of lst)` for every list serialises
--- 15+ fields per reminder and times out on large lists (600+ items). Instead
--- read only the two fields needed to MATCH (name, body) in bulk per list, then
--- read the heavy output fields (id, due date, completed) for the few matches
--- only, addressed positionally (bulk field order aligns with `reminder i of`).
-on search_reminders(searchQuery, includeCompleted)
+-- 15+ fields per reminder and times out on large lists. Reading only the fields
+-- needed to MATCH in bulk per list, then the heavy output fields for the few
+-- matches, is much cheaper (matches addressed positionally, since bulk field
+-- order aligns with `reminder i of`).
+--
+-- The dominant cost is `body of reminders of lst`: on a 1200-reminder account a
+-- name+body read costs ~64s (over the client timeout) versus ~24s for names
+-- alone. So notes matching is OPT-IN (searchNotes is "true"); by default we read
+-- names only. Either way the matched output line still includes the notes field,
+-- read per-match, which is cheap because matches are few.
+on search_reminders(searchQuery, includeCompleted, searchNotes)
     tell application "Reminders"
         set allLists to every list
     end tell
@@ -209,28 +217,37 @@ on search_reminders(searchQuery, includeCompleted)
         tell application "Reminders"
             set lstName to name of lst
             set nameList to name of reminders of lst
-            set bodyList to body of reminders of lst
+            if searchNotes is "true" then
+                set bodyList to body of reminders of lst
+            else
+                set bodyList to {}
+            end if
         end tell
 
         set n to count of nameList
         repeat with i from 1 to n
             set remName to item i of nameList
-            set remBody to item i of bodyList
-            if remBody is missing value then set remBody to ""
 
             set isMatch to false
             ignoring case
-                if (remName contains searchQuery) or (remBody contains searchQuery) then set isMatch to true
+                if remName contains searchQuery then
+                    set isMatch to true
+                else if searchNotes is "true" then
+                    set b to item i of bodyList
+                    if (b is not missing value) and (b contains searchQuery) then set isMatch to true
+                end if
             end ignoring
 
             if isMatch then
-                -- Read the remaining fields for this match only.
+                -- Read the remaining fields (including notes) for this match only.
                 tell application "Reminders"
                     set rem to reminder i of lst
                     set remId to id of rem
                     set remDone to completed of rem
                     set remDue to due date of rem
+                    set remBody to body of rem
                 end tell
+                if remBody is missing value then set remBody to ""
 
                 if (includeCompleted is "true") or (not remDone) then
                     set dueStr to ""

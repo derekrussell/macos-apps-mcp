@@ -97,7 +97,12 @@ TOOLS: list[Tool] = [
         name="reminder_search",
         description=(
             "Search for reminders by text across all Apple Reminders lists. "
-            "Matches against title and notes. "
+            "By default matches against the title only; set search_notes to true "
+            "to also match notes/body content. "
+            "Note: searching notes is significantly slower on large accounts "
+            "(it must read every reminder's body) and may time out; leave it off "
+            "unless you specifically need to match note text. "
+            "The returned notes field is always populated regardless. "
             "Returns a JSON array where each element has id, title, "
             "due_date, notes, is_completed, and list."
         ),
@@ -106,11 +111,16 @@ TOOLS: list[Tool] = [
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Text to search for in reminder titles and notes.",
+                    "description": "Text to search for in reminder titles (and notes if search_notes is true).",
                 },
                 "include_completed": {
                     "type": "boolean",
                     "description": "If true, include completed reminders. Defaults to false.",
+                    "default": False,
+                },
+                "search_notes": {
+                    "type": "boolean",
+                    "description": "If true, also match against each reminder's notes/body. Slower; defaults to false (title-only).",
                     "default": False,
                 },
             },
@@ -252,6 +262,13 @@ async def _run_script(action: str, *args: str) -> str:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
     except asyncio.TimeoutError:
         proc.kill()
+        # Reap the killed child so it does not linger and hold its pipes open.
+        # An osascript blocked inside a synchronous Apple event ignores SIGKILL
+        # until that event returns, so bound the wait rather than hang here.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pass
         raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
@@ -355,7 +372,12 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
     if name == "reminder_search":
         query = arguments["query"]
         include_completed = bool(arguments.get("include_completed", False))
-        raw = await _run_script("search", query, str(include_completed).lower())
+        search_notes = bool(arguments.get("search_notes", False))
+        raw = await _run_script(
+            "search", query,
+            str(include_completed).lower(),
+            str(search_notes).lower(),
+        )
         reminders = [r for r in (_parse_reminder(line)
                                  for line in raw.splitlines()) if r]
         return [TextContent(type="text", text=json.dumps(reminders, indent=2))]
