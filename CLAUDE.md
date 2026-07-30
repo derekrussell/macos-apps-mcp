@@ -90,8 +90,13 @@ EventKit** (see gotchas). Instead:
   an explicit empty `due_date` (omit it to leave unchanged).
 - **Notes has no title field** — the title is the first line of the body; `create`/
   `update` compose them together so the title isn't clobbered.
-- **iCloud/IMAP mailboxes can't be deleted** via AppleScript (`-10000`);
-  `mail_delete_mailbox` surfaces an actionable error advising manual deletion.
+- **`mail_delete_mailbox` is local-only.** AppleScript can delete local
+  ("On My Mac") mailboxes, but Apple Mail refuses iCloud/IMAP mailbox deletion
+  (`-10000`, the removal must round-trip to the server). The tool surfaces an
+  actionable error for those; its description tells the model to advise manual
+  deletion (Mail.app → right-click → Delete Mailbox) instead of calling it.
+  (Mailbox *creation* does sync to iCloud, if a `mail_create_mailbox` is ever
+  added.)
 
 ## Run & verify
 
