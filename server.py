@@ -101,6 +101,9 @@ async def main():
     discovery, and the call/response loop for the lifetime of the session.
     """
     async with stdio_server() as streams:
+        # Start building the reminder search index in the background so it is
+        # usually ready before the first reminder_search arrives.
+        reminders.warm_index()
         await app.run(*streams, app.create_initialization_options())
 
 if __name__ == "__main__":
