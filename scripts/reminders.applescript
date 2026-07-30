@@ -10,8 +10,7 @@
 --                                                      -> total\nid|title|due_date|notes|is_completed|list\n...
 --   search         <query> <include_completed> <search_notes>
 --                                                      -> id|title|due_date|notes|is_completed|list\n...
---   build_index                                        -> id|title|list\n...   (lightweight, all lists)
---   hydrate        <id> [<id> ...]                     -> id|due_date|notes|is_completed\n...
+--   build_index                                        -> id|title|list|due_date|is_completed\n...   (all lists)
 --   create         <title> <list> <due_date> <notes>   -> reminder_id
 --   complete       <reminder_id>                       -> (no output)
 --   update         <reminder_id> <title> <due_date> <notes> <list>
@@ -40,9 +39,6 @@ on run argv
         return search_reminders(searchQuery, includeCompleted, searchNotes)
     else if action is "build_index" then
         return build_index()
-    else if action is "hydrate" then
-        if (count of argv) < 2 then return ""
-        return hydrate_reminders(items 2 thru -1 of argv)
     else if action is "create" then
         return create_reminder(item 2 of argv, item 3 of argv, item 4 of argv, item 5 of argv)
     else if action is "complete" then
@@ -273,13 +269,14 @@ on search_reminders(searchQuery, includeCompleted, searchNotes)
 end search_reminders
 
 
--- Build a lightweight index of every reminder across all lists, for the
--- Python-side search cache. Output is pipe-delimited: id|title|list
+-- Build the search index of every reminder across all lists, for the Python
+-- side to hold in memory. Output is pipe-delimited:
+--   id|title|list|due_date|is_completed
 --
--- Only two bulk field reads per list (id, name) keep this well under the client
--- timeout even on large accounts. The heavier per-reminder fields (due date,
--- notes, completed) are fetched on demand by `hydrate` for matches only, so
--- they never have to be serialised for the whole account here.
+-- Reads each field in bulk per list (id, name, due date, completed) — a handful
+-- of Apple events per list rather than one per reminder. Notes are deliberately
+-- excluded: reading every body is what pushes a full scan past the client
+-- timeout, and this runs in the background where cost affects only freshness.
 on build_index()
     tell application "Reminders"
         set allLists to every list
@@ -291,49 +288,23 @@ on build_index()
             set lstName to name of lst
             set idList to id of reminders of lst
             set nameList to name of reminders of lst
+            set dueList to due date of reminders of lst
+            set doneList to completed of reminders of lst
         end tell
         repeat with i from 1 to count of idList
-            set output to output & (item i of idList) & "|" & (util's sanitise_field(item i of nameList)) & "|" & lstName & linefeed
-        end repeat
-    end repeat
-    return output
-end build_index
-
-
--- Resolve the heavy fields for a specific set of reminder ids (the matches from
--- a cached search). Output is pipe-delimited: id|due_date|notes|is_completed
---
--- `reminder id` is an O(1) direct reference, so hydrating a handful of matches
--- is cheap even though a full scan of the same fields would not be. Unknown ids
--- are skipped silently (e.g. a reminder deleted since the index was built).
-on hydrate_reminders(idList)
-    set output to ""
-    repeat with rid in idList
-        set ridStr to rid as text
-        set gotIt to false
-        tell application "Reminders"
-            try
-                set rem to reminder id ridStr
-                set remDue to due date of rem
-                set remBody to body of rem
-                set remDone to completed of rem
-                set gotIt to true
-            end try
-        end tell
-        if gotIt then
+            set dueVal to item i of dueList
             set dueStr to ""
-            if remDue is not missing value then set dueStr to util's format_date(remDue)
-            if remBody is missing value then set remBody to ""
-            if remDone then
+            if dueVal is not missing value then set dueStr to util's format_date(dueVal)
+            if (item i of doneList) then
                 set doneStr to "true"
             else
                 set doneStr to "false"
             end if
-            set output to output & ridStr & "|" & dueStr & "|" & (util's sanitise_field(remBody)) & "|" & doneStr & linefeed
-        end if
+            set output to output & (item i of idList) & "|" & (util's sanitise_field(item i of nameList)) & "|" & lstName & "|" & dueStr & "|" & doneStr & linefeed
+        end repeat
     end repeat
     return output
-end hydrate_reminders
+end build_index
 
 
 -- Create a new reminder in the named list.
