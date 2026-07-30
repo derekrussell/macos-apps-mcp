@@ -10,7 +10,7 @@ emails in Apple Mail via AppleScript:
   mail_get_body        — Fetch the full plain-text body of a message
   mail_move            — Move a message to another mailbox
   mail_delete          — Move a message to the Trash
-  mail_delete_mailbox  — Permanently delete a mailbox and its contents
+  mail_delete_mailbox  — Delete a local mailbox (iCloud/IMAP: manual only)
 
 AppleScript is invoked via osascript, passing scripts/mail.applescript
 as the script file and an action keyword as the first argument. All
@@ -256,12 +256,15 @@ TOOLS: list[Tool] = [
     Tool(
         name="mail_delete_mailbox",
         description=(
-            "Permanently delete a mailbox and all messages it contains. "
-            "This cannot be undone. "
+            "Permanently delete a LOCAL ('On My Mac') mailbox and all messages it "
+            "contains. This cannot be undone. "
             "Use mail_list_mailboxes to confirm the mailbox path before calling this. "
-            "Note: Apple Mail often refuses to delete IMAP/iCloud mailboxes via "
-            "AppleScript (the removal must round-trip to the server); if so, this "
-            "returns an error advising manual deletion in Mail.app."
+            "Limitation: this works only for local mailboxes. Apple Mail refuses to "
+            "delete iCloud/IMAP mailboxes via AppleScript (deletion must round-trip "
+            "to the server), so for an iCloud/IMAP path this returns an error and the "
+            "mailbox must be removed manually in Mail.app (right-click the mailbox -> "
+            "Delete Mailbox). For iCloud/IMAP mailboxes, prefer advising manual "
+            "deletion rather than calling this tool."
         ),
         inputSchema={
             "type": "object",
