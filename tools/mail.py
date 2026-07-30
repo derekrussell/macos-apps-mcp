@@ -10,7 +10,7 @@ emails in Apple Mail via AppleScript:
   mail_get_body        — Fetch the full plain-text body of a message
   mail_move            — Move a message to another mailbox
   mail_delete          — Move a message to the Trash
-  mail_delete_mailbox  — Delete a local mailbox (iCloud/IMAP: manual only)
+  mail_rename_mailbox  — Rename a mailbox (deletion isn't scriptable in Mail)
 
 AppleScript is invoked via osascript, passing scripts/mail.applescript
 as the script file and an action keyword as the first argument. All
@@ -254,27 +254,31 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
-        name="mail_delete_mailbox",
+        name="mail_rename_mailbox",
         description=(
-            "Permanently delete a LOCAL ('On My Mac') mailbox and all messages it "
-            "contains. This cannot be undone. "
-            "Use mail_list_mailboxes to confirm the mailbox path before calling this. "
-            "Limitation: this works only for local mailboxes. Apple Mail refuses to "
-            "delete iCloud/IMAP mailboxes via AppleScript (deletion must round-trip "
-            "to the server), so for an iCloud/IMAP path this returns an error and the "
-            "mailbox must be removed manually in Mail.app (right-click the mailbox -> "
-            "Delete Mailbox). For iCloud/IMAP mailboxes, prefer advising manual "
-            "deletion rather than calling this tool."
+            "Rename an Apple Mail mailbox (change its leaf name; it stays in the "
+            "same account and parent). Returns the new account-qualified path. "
+            "Use mail_list_mailboxes to get the current path first. "
+            "Deleting a mailbox is NOT possible via AppleScript — Apple Mail's "
+            "`delete` fails with a -10000 error for every mailbox type (local and "
+            "iCloud/IMAP), a long-standing limitation. Renaming is therefore the "
+            "supported way to flag a mailbox for manual removal: rename it (e.g. "
+            "prefix with 'DELETE ME - ') and tell the user to delete it in Mail.app "
+            "(right-click the mailbox -> Delete Mailbox)."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "mailbox": {
                     "type": "string",
-                    "description": "Account-qualified path of the mailbox to delete from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions')."
+                    "description": "Current account-qualified path of the mailbox from mail_list_mailboxes (e.g. 'iCloud/Old Project')."
+                },
+                "new_name": {
+                    "type": "string",
+                    "description": "New leaf name for the mailbox. A plain name, not a path — must not contain '/'."
                 },
             },
-            "required": ["mailbox"],
+            "required": ["mailbox", "new_name"],
         },
     ),
 ]
@@ -619,9 +623,14 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         await _run_script("delete", message_id)
         return [TextContent(type="text", text=f"Deleted {message_id!r}.")]
 
-    if name == "mail_delete_mailbox":
+    if name == "mail_rename_mailbox":
         mailbox = arguments["mailbox"]
-        await _run_script("delete_mailbox", mailbox)
-        return [TextContent(type="text", text=f"Deleted mailbox '{mailbox}'.")]
+        new_name = arguments["new_name"]
+        if "/" in new_name:
+            raise ValueError(
+                "new_name must be a plain mailbox name, not a path (no '/')."
+            )
+        new_path = await _run_script("rename_mailbox", mailbox, new_name)
+        return [TextContent(type="text", text=f"Renamed '{mailbox}' to '{new_path}'.")]
 
     raise ValueError(f"Unknown mail tool: '{name}'.")
