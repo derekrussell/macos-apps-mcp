@@ -308,7 +308,9 @@ end build_index
 
 
 -- Create a new reminder in the named list.
--- Returns the id of the created reminder.
+-- Returns "id|list" — the created reminder's id and the RESOLVED list name (so
+-- "default" becomes e.g. "Reminders"), which lets the caller seed its search
+-- index with the real list name rather than the raw argument.
 -- Pass empty string for due_date or notes to omit them.
 on create_reminder(remTitle, listName, dueDateStr, notes)
     set targetList to resolve_list(listName)
@@ -322,7 +324,7 @@ on create_reminder(remTitle, listName, dueDateStr, notes)
         set newReminder to make new reminder at end of targetList with properties {name:remTitle}
         if dueProvided then set due date of newReminder to parsedDue
         if notes is not "" then set body of newReminder to notes
-        return id of newReminder
+        return (id of newReminder) & "|" & (name of targetList)
     end tell
 end create_reminder
 
