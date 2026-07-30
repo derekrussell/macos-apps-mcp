@@ -31,6 +31,7 @@ Note:
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
@@ -99,9 +100,13 @@ TOOLS: list[Tool] = [
             "Search for reminders by text across all Apple Reminders lists. "
             "By default matches against the title only; set search_notes to true "
             "to also match notes/body content. "
-            "Note: searching notes is significantly slower on large accounts "
-            "(it must read every reminder's body) and may time out; leave it off "
-            "unless you specifically need to match note text. "
+            "Title search is served from a short-lived (~45s) in-memory index for "
+            "reliability on large accounts, so a newly created reminder appears "
+            "immediately (mutations refresh the index) but an edit made in the "
+            "Apple Reminders app may take up to ~45s to be reflected. "
+            "Note: search_notes is significantly slower on large accounts "
+            "(it must read every reminder's body live) and may time out; leave it "
+            "off unless you specifically need to match note text. "
             "The returned notes field is always populated regardless. "
             "Returns a JSON array where each element has id, title, "
             "due_date, notes, is_completed, and list."
@@ -307,6 +312,55 @@ def _parse_reminder(line: str) -> dict | None:
     }
 
 # ------------------------------------------------------------
+# Search index cache
+#
+# reminder_search cannot scan every list on every call: on a large account a
+# full AppleScript scan takes tens of seconds, and repeating it a handful of
+# times in a session cumulatively wedges EventKit until searches time out and
+# stop recovering. Instead we scan once into an in-memory index (id, title,
+# list), reuse it for a short TTL, and serialise rebuilds behind a lock so
+# concurrent searches never launch overlapping scans. Mutations invalidate the
+# index so a create-then-search still sees the new reminder. Only the title
+# lives in the index; due/notes/completed are hydrated per match (a few O(1)
+# `reminder id` lookups), which keeps both the build and each search cheap.
+# ------------------------------------------------------------
+
+_INDEX_TTL = 45.0
+_index_cache: list[dict] | None = None
+_index_built_at: float = 0.0
+_index_lock = asyncio.Lock()
+
+
+def _invalidate_index() -> None:
+    """Drop the cached search index so the next search rebuilds it."""
+    global _index_cache
+    _index_cache = None
+
+
+async def _get_search_index() -> list[dict]:
+    """Return the cached reminder index, rebuilding it if stale or missing.
+
+    The rebuild is serialised behind a lock: a second search arriving while a
+    build is in flight waits, then finds the freshly built cache instead of
+    launching its own overlapping scan.
+    """
+    global _index_cache, _index_built_at
+    async with _index_lock:
+        now = time.monotonic()
+        if _index_cache is not None and (now - _index_built_at) < _INDEX_TTL:
+            return _index_cache
+        raw = await _run_script("build_index")
+        index: list[dict] = []
+        for line in raw.splitlines():
+            parts = line.split("|", maxsplit=2)
+            if len(parts) == 3:
+                index.append({"id": parts[0], "title": parts[1], "list": parts[2]})
+        _index_cache = index
+        _index_built_at = time.monotonic()
+        return _index_cache
+
+
+# ------------------------------------------------------------
 # Section D — Public interface
 # ------------------------------------------------------------
 
@@ -373,13 +427,57 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         query = arguments["query"]
         include_completed = bool(arguments.get("include_completed", False))
         search_notes = bool(arguments.get("search_notes", False))
-        raw = await _run_script(
-            "search", query,
-            str(include_completed).lower(),
-            str(search_notes).lower(),
-        )
-        reminders = [r for r in (_parse_reminder(line)
-                                 for line in raw.splitlines()) if r]
+
+        if search_notes:
+            # Opt-in full-text scan (matches notes too). This reads every
+            # reminder's body live and can be slow on large accounts; it is not
+            # cached because the body content is the expensive part to fetch.
+            raw = await _run_script(
+                "search", query, str(include_completed).lower(), "true",
+            )
+            reminders = [r for r in (_parse_reminder(line)
+                                     for line in raw.splitlines()) if r]
+            return [TextContent(type="text", text=json.dumps(reminders, indent=2))]
+
+        # Fast path: match titles against the cached index in memory, then
+        # hydrate the remaining fields for the matches only.
+        index = await _get_search_index()
+        q = query.lower()
+        matches = [e for e in index if q in e["title"].lower()]
+        if not matches:
+            return [TextContent(type="text", text=json.dumps([], indent=2))]
+
+        # A broad query could match many reminders; each hydrate is an O(1)
+        # lookup, so cap how many we resolve in one call to bound the cost.
+        matches = matches[:100]
+        raw = await _run_script("hydrate", *[e["id"] for e in matches])
+        details: dict[str, dict] = {}
+        for line in raw.splitlines():
+            parts = line.split("|", maxsplit=3)
+            if len(parts) == 4:
+                rid, due, notes, done = parts
+                details[rid] = {
+                    "due_date": due or None,
+                    "notes": notes or None,
+                    "is_completed": done == "true",
+                }
+
+        reminders = []
+        for e in matches:
+            d = details.get(
+                e["id"],
+                {"due_date": None, "notes": None, "is_completed": False},
+            )
+            if not include_completed and d["is_completed"]:
+                continue
+            reminders.append({
+                "id": e["id"],
+                "title": e["title"],
+                "due_date": d["due_date"],
+                "notes": d["notes"],
+                "is_completed": d["is_completed"],
+                "list": e["list"],
+            })
         return [TextContent(type="text", text=json.dumps(reminders, indent=2))]
 
     if name == "reminder_create":
@@ -388,11 +486,13 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         due_date = arguments.get("due_date", "")
         notes = arguments.get("notes", "")
         reminder_id = await _run_script("create", title, list_name, due_date, notes)
+        _invalidate_index()
         return [TextContent(type="text", text=reminder_id)]
 
     if name == "reminder_complete":
         reminder_id = arguments["reminder_id"]
         await _run_script("complete", reminder_id)
+        _invalidate_index()
         return [TextContent(type="text", text=f"Completed {reminder_id!r}.")]
 
     if name == "reminder_update":
@@ -404,11 +504,13 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         notes = arguments.get("notes", "")
         list_name = arguments.get("list", "")
         await _run_script("update", reminder_id, title, due_date, notes, list_name)
+        _invalidate_index()
         return [TextContent(type="text", text=f"Updated {reminder_id!r}.")]
 
     if name == "reminder_delete":
         reminder_id = arguments["reminder_id"]
         await _run_script("delete", reminder_id)
+        _invalidate_index()
         return [TextContent(type="text", text=f"Deleted {reminder_id!r}.")]
 
     raise ValueError(f"Unknown reminder tool: '{name}'.")
