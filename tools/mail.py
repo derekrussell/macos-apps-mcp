@@ -243,6 +243,13 @@ async def _run_script(action: str, *args: str) -> str:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
     except asyncio.TimeoutError:
         proc.kill()
+        # Reap the killed child so it does not linger and hold its pipes open.
+        # An osascript blocked inside a synchronous Apple event ignores SIGKILL
+        # until that event returns, so bound the wait rather than hang here.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            pass
         raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
