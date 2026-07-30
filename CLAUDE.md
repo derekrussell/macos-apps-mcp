@@ -36,7 +36,7 @@ config.py                  (empty)
 
 **Mail (8):** `mail_get_messages` · `mail_search` · `mail_count_messages` ·
 `mail_list_mailboxes` · `mail_get_body` · `mail_move` · `mail_delete` ·
-`mail_delete_mailbox`
+`mail_rename_mailbox`
 
 **Reminders (7):** `reminder_list_lists` · `reminder_get` · `reminder_search` ·
 `reminder_create` · `reminder_complete` · `reminder_update` · `reminder_delete`
@@ -90,13 +90,15 @@ EventKit** (see gotchas). Instead:
   an explicit empty `due_date` (omit it to leave unchanged).
 - **Notes has no title field** — the title is the first line of the body; `create`/
   `update` compose them together so the title isn't clobbered.
-- **`mail_delete_mailbox` is local-only.** AppleScript can delete local
-  ("On My Mac") mailboxes, but Apple Mail refuses iCloud/IMAP mailbox deletion
-  (`-10000`, the removal must round-trip to the server). The tool surfaces an
-  actionable error for those; its description tells the model to advise manual
-  deletion (Mail.app → right-click → Delete Mailbox) instead of calling it.
-  (Mailbox *creation* does sync to iCloud, if a `mail_create_mailbox` is ever
-  added.)
+- **Mailbox deletion is not scriptable in Mail — at all.** AppleScript `delete`
+  of a *mailbox* fails with a generic `-10000` for **every** type (local, POP,
+  IMAP/iCloud), a long-standing limitation across macOS versions (reported since
+  ~Sierra), not an IMAP round-trip issue. `move` of a mailbox fails the same way.
+  Message-level `delete`/`move` work fine — it's specifically mailbox *structure*
+  ops that are broken. So there is **no `mail_delete_mailbox`**; deletion must be
+  done manually in Mail.app (right-click → Delete Mailbox). Mailbox *rename* and
+  *create* do work, so `mail_rename_mailbox` is provided as the way to flag a
+  mailbox for manual deletion (e.g. prefix "DELETE ME - ").
 
 ## Run & verify
 

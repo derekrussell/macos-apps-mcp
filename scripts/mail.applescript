@@ -14,7 +14,7 @@
 --   get_body        <message_id>                   -> plain-text body
 --   move            <message_id> <mailbox>         -> (no output)
 --   delete          <message_id>                   -> (no output)
---   delete_mailbox  <mailbox>                      -> (no output)
+--   rename_mailbox  <mailbox> <new_name>           -> new account-qualified path
 
 -- Shared handlers (sanitise_field, format_date), loaded once per invocation.
 property util : missing value
@@ -52,8 +52,8 @@ on run argv
         move_message(item 2 of argv, item 3 of argv)
     else if action is "delete" then
         delete_message(item 2 of argv)
-    else if action is "delete_mailbox" then
-        delete_mailbox(item 2 of argv)
+    else if action is "rename_mailbox" then
+        return rename_mailbox(item 2 of argv, item 3 of argv)
     else
         error "Unknown action: " & action
     end if
@@ -346,17 +346,17 @@ on delete_message(messageId)
 end delete_message
 
 
--- Permanently delete the named mailbox and all its contents.
--- Note: Mail's AppleScript delete frequently fails for IMAP/iCloud mailboxes
--- with a generic "-10000" because the removal must round-trip to the server.
--- Surface a clear, actionable message instead of the cryptic code.
-on delete_mailbox(mailboxName)
+-- Rename a mailbox (change its leaf name; it stays in the same account/parent).
+-- Returns the new account-qualified path.
+--
+-- Mail's AppleScript interface cannot DELETE a mailbox — `delete` fails with a
+-- generic "-10000" for every mailbox type (local, POP, IMAP/iCloud), a
+-- long-standing limitation across macOS versions. Renaming DOES work, so it is
+-- the supported way to flag a mailbox for manual deletion in Mail.app.
+on rename_mailbox(mailboxName, newName)
     set targetMailbox to resolve_mailbox(mailboxName)
     tell application "Mail"
-        try
-            delete targetMailbox
-        on error errMsg number errNum
-            error "Could not delete mailbox '" & mailboxName & "' (" & errNum & "). Mail often refuses to delete IMAP/iCloud mailboxes via AppleScript; delete it manually in Mail.app (right-click the mailbox -> Delete Mailbox)."
-        end try
+        set name of targetMailbox to newName
     end tell
-end delete_mailbox
+    return my mailbox_path(targetMailbox)
+end rename_mailbox
