@@ -1,9 +1,10 @@
 """Apple Mail tools for the MCP server.
 
-Exposes seven tools that let the client read, organise, and delete
+Exposes eight tools that let the client read, organise, and delete
 emails in Apple Mail via AppleScript:
 
   mail_get_messages    — List messages in a mailbox, with pagination
+  mail_search          — Search a mailbox by sender/subject/body/date/read
   mail_count_messages  — Count messages in a mailbox
   mail_list_mailboxes  — List all mailboxes with their message counts
   mail_get_body        — Fetch the full plain-text body of a message
@@ -81,6 +82,72 @@ TOOLS: list[Tool] = [
                 "mailbox": {
                     "type": "string",
                     "description": "Account-qualified mailbox path from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions'), or 'inbox'. Defaults to the inbox."
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="mail_search",
+        description=(
+            "Search messages within a single Apple Mail mailbox by sender, "
+            "subject, body text, date range, and read state — instead of paging "
+            "mail_get_messages over a large mailbox. "
+            "All supplied criteria are combined with AND; omit a field to ignore "
+            "it. At least one of sender, subject, body, since, or until is "
+            "required (to list a whole mailbox, use mail_get_messages). "
+            "Returns a JSON object {status, total, offset, returned, has_more, "
+            "messages}, where each message has id, subject, sender, date "
+            "(ISO 8601: YYYY-MM-DDTHH:MM:SS), and is_read. Paginated via "
+            "count/offset; page with offset while has_more is true. "
+            "Searches the inbox by default; set mailbox to an account-qualified "
+            "path to search a different one. "
+            "Note: body search reads message bodies and is slower — it is most "
+            "effective combined with sender/subject/date criteria; a body-only "
+            "search of a large mailbox may time out. This searches one mailbox, "
+            "not across all mailboxes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "sender": {
+                    "type": "string",
+                    "description": "Substring to match in the sender name or address (case-insensitive).",
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Substring to match in the subject (case-insensitive).",
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Substring to match in the message body (case-insensitive). Slower — reads bodies; best combined with other criteria.",
+                },
+                "since": {
+                    "type": "string",
+                    "description": "Only messages sent on or after this date (ISO 8601 YYYY-MM-DD).",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "Only messages sent on or before this date, inclusive of the whole day (ISO 8601 YYYY-MM-DD).",
+                },
+                "unread_only": {
+                    "type": "boolean",
+                    "description": "If true, only unread messages. Defaults to false.",
+                    "default": False,
+                },
+                "mailbox": {
+                    "type": "string",
+                    "description": "Account-qualified mailbox path from mail_list_mailboxes (e.g. 'iCloud/Church/Transactions'), or 'inbox'. Defaults to the inbox.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Maximum number of matches to return in this page.",
+                    "default": 50,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Zero-based index of the first match to return.",
+                    "default": 0,
                 },
             },
             "required": [],
@@ -332,6 +399,74 @@ async def _get_messages(
     }
 
 
+async def _search_messages(
+    mailbox: str,
+    sender: str,
+    subject: str,
+    body: str,
+    since: str,
+    until: str,
+    unread_only: bool,
+    count: int,
+    offset: int,
+) -> dict:
+    """Search a single mailbox and return a paginated batch of matches.
+
+    Calls the AppleScript search action, which pushes sender/subject/date/read
+    filters into a native `whose` clause and returns a header line with the
+    total match count followed by one pipe-delimited record per message:
+        <message_id>|<subject>|<sender>|<date>|<is_read>
+
+    The script paginates, so `total` is the full match count while the record
+    lines are just the requested page.
+
+    Returns:
+        A dict with keys: status, total, offset, returned, has_more, messages
+        (each message a dict with id, subject, sender, date, is_read).
+    """
+    raw = await _run_script(
+        "search",
+        mailbox, sender, subject, body, since, until,
+        str(unread_only).lower(), str(count), str(offset),
+    )
+
+    if not raw:
+        return {
+            "status": "ok",
+            "total": 0,
+            "offset": offset,
+            "returned": 0,
+            "has_more": False,
+            "messages": [],
+        }
+
+    lines = raw.splitlines()
+    total = int(lines[0])
+
+    messages = []
+    for line in lines[1:]:
+        # Each record is pipe-delimited: message_id|subject|sender|date|is_read
+        parts = line.split("|", maxsplit=4)
+        if len(parts) == 5:
+            message_id, subject_f, sender_f, date, is_read = parts
+            messages.append({
+                "id": message_id,
+                "subject": subject_f,
+                "sender": sender_f,
+                "date": date,
+                "is_read": is_read == "true",
+            })
+
+    return {
+        "status": "ok",
+        "total": total,
+        "offset": offset,
+        "returned": len(messages),
+        "has_more": offset + len(messages) < total,
+        "messages": messages,
+    }
+
+
 async def _count_messages(
     unread_only: bool = False,
     mailbox: str = "inbox",
@@ -428,6 +563,31 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
         unread_only = bool(arguments.get("unread_only", False))
         mailbox = arguments.get("mailbox", "inbox")
         result = await _get_messages(count, offset, unread_only, mailbox)
+        return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    if name == "mail_search":
+        sender = arguments.get("sender", "")
+        subject = arguments.get("subject", "")
+        body = arguments.get("body", "")
+        since = arguments.get("since", "")
+        until = arguments.get("until", "")
+        unread_only = bool(arguments.get("unread_only", False))
+        mailbox = arguments.get("mailbox", "inbox")
+        count = int(arguments.get("count", 50))
+        offset = int(arguments.get("offset", 0))
+
+        # Require a real criterion so we never silently dump a whole mailbox;
+        # unread_only is a modifier, not a search term on its own.
+        if not any([sender, subject, body, since, until]):
+            raise ValueError(
+                "mail_search needs at least one of: sender, subject, body, "
+                "since, until. To list a whole mailbox, use mail_get_messages."
+            )
+
+        result = await _search_messages(
+            mailbox, sender, subject, body, since, until,
+            unread_only, count, offset,
+        )
         return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
     if name == "mail_count_messages":

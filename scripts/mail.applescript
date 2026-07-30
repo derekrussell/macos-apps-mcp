@@ -8,6 +8,8 @@
 --   count_messages  <unread_only> <mailbox>        -> integer
 --   get_messages    <count> <offset> <unread_only> <mailbox>
 --                                                  -> total\nmsg_id|subject|sender|date|is_read\n...
+--   search          <mailbox> <sender> <subject> <body> <since> <until> <unread_only> <count> <offset>
+--                                                  -> total\nmsg_id|subject|sender|date|is_read\n...
 --   list_mailboxes                                 -> name|count\n...
 --   get_body        <message_id>                   -> plain-text body
 --   move            <message_id> <mailbox>         -> (no output)
@@ -31,6 +33,17 @@ on run argv
         set unreadOnly to item 4 of argv
         set mailboxName to item 5 of argv
         return get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
+    else if action is "search" then
+        set mailboxName to item 2 of argv
+        set senderQ to item 3 of argv
+        set subjectQ to item 4 of argv
+        set bodyQ to item 5 of argv
+        set sinceStr to item 6 of argv
+        set untilStr to item 7 of argv
+        set unreadOnly to item 8 of argv
+        set batchCount to (item 9 of argv) as integer
+        set batchOffset to (item 10 of argv) as integer
+        return search_messages(mailboxName, senderQ, subjectQ, bodyQ, sinceStr, untilStr, unreadOnly, batchCount, batchOffset)
     else if action is "list_mailboxes" then
         return list_mailboxes()
     else if action is "get_body" then
@@ -176,6 +189,116 @@ on get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
         return output
     end tell
 end get_messages
+
+
+-- Search messages within a single mailbox by sender, subject, body, date range
+-- and read state. All supplied criteria are AND-combined; empty text fields are
+-- ignored. Paginated the same way as get_messages.
+-- Output: total\nmsg_id|subject|sender|date|is_read\n...
+--
+-- Sender, subject, date range and read state are pushed into a native `whose`
+-- clause so Mail returns only matches instead of us reading every message. A
+-- text predicate is included ONLY when its criterion is non-empty: Mail's query
+-- engine treats `contains ""` as matching NOTHING (unlike plain AppleScript), so
+-- an empty field must be omitted rather than passed as a wildcard. That leaves a
+-- small fixed set of clause shapes, enumerated below. The date range is always
+-- present (missing bounds use wide sentinels), so the clause is never empty.
+--
+-- Body match is applied LOCALLY to the narrowed set: `content contains` inside a
+-- `whose` would force Mail to decode every body in the mailbox, whereas reading
+-- bodies only for the already-narrowed candidates is far cheaper.
+on search_messages(mailboxName, senderQ, subjectQ, bodyQ, sinceStr, untilStr, unreadOnly, batchCount, batchOffset)
+    set targetMailbox to resolve_mailbox(mailboxName)
+
+    -- Build the date bounds component-wise (ISO string coercion mangles dates).
+    -- Missing bounds use sentinels; an inclusive `until` spans the whole day.
+    if sinceStr is "" then
+        set sinceDate to util's parse_iso_date("1970-01-01")
+    else
+        set sinceDate to util's parse_iso_date(sinceStr)
+    end if
+    if untilStr is "" then
+        set untilDate to util's parse_iso_date("2999-12-31")
+    else
+        set untilDate to (util's parse_iso_date(untilStr)) + 1 * days - 1
+    end if
+
+    set hasSender to (senderQ is not "")
+    set hasSubject to (subjectQ is not "")
+    set unread to (unreadOnly is "true")
+
+    tell application "Mail"
+        -- Enumerate clause shapes: a predicate for sender/subject is present
+        -- only when its criterion is non-empty (see note above).
+        if hasSender and hasSubject then
+            if unread then
+                set matched to (messages of targetMailbox whose sender contains senderQ and subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+            else
+                set matched to (messages of targetMailbox whose sender contains senderQ and subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate)
+            end if
+        else if hasSender then
+            if unread then
+                set matched to (messages of targetMailbox whose sender contains senderQ and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+            else
+                set matched to (messages of targetMailbox whose sender contains senderQ and date sent ≥ sinceDate and date sent ≤ untilDate)
+            end if
+        else if hasSubject then
+            if unread then
+                set matched to (messages of targetMailbox whose subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+            else
+                set matched to (messages of targetMailbox whose subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate)
+            end if
+        else
+            if unread then
+                set matched to (messages of targetMailbox whose date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+            else
+                set matched to (messages of targetMailbox whose date sent ≥ sinceDate and date sent ≤ untilDate)
+            end if
+        end if
+
+        -- Body match: filter the narrowed candidates locally, reading content
+        -- only for them. Messages whose body cannot be read are skipped.
+        if bodyQ is not "" then
+            set filtered to {}
+            repeat with msg in matched
+                try
+                    ignoring case
+                        if (content of msg) contains bodyQ then set end of filtered to (contents of msg)
+                    end ignoring
+                end try
+            end repeat
+        else
+            set filtered to matched
+        end if
+
+        set totalCount to count of filtered
+        set output to (totalCount as text) & linefeed
+        if totalCount is 0 then return output
+
+        -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
+        set startIdx to batchOffset + 1
+        if startIdx > totalCount then return output
+        set endIdx to batchOffset + batchCount
+        if endIdx > totalCount then set endIdx to totalCount
+
+        set batchMessages to items startIdx thru endIdx of filtered
+
+        repeat with msg in batchMessages
+            set msgId to message id of msg
+            set msgSubject to subject of msg
+            set msgSender to sender of msg
+            set msgDate to my (util's format_date(date sent of msg))
+            if read status of msg is true then
+                set msgRead to "true"
+            else
+                set msgRead to "false"
+            end if
+            set output to output & msgId & "|" & (my (util's sanitise_field(msgSubject))) & "|" & (my (util's sanitise_field(msgSender))) & "|" & msgDate & "|" & msgRead & linefeed
+        end repeat
+
+        return output
+    end tell
+end search_messages
 
 
 -- Return all mailboxes across all accounts with their message counts.
