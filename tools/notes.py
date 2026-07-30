@@ -88,8 +88,11 @@ TOOLS: list[Tool] = [
         description=(
             "Search for notes by text across all Apple Notes folders. "
             "Matches against title and body content. "
-            "Returns a JSON array where each element has id, title, "
-            "folder, and modified_date."
+            "Returns a JSON object {status, total, offset, returned, has_more, "
+            "notes}, where notes is an array whose elements have id, title, "
+            "folder, and modified_date. Results are paginated via count/offset "
+            "(total is the full match count); page through with offset when "
+            "has_more is true."
         ),
         inputSchema={
             "type": "object",
@@ -97,6 +100,16 @@ TOOLS: list[Tool] = [
                 "query": {
                     "type": "string",
                     "description": "Text to search for in note titles and body content."
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Maximum number of matches to return in this page.",
+                    "default": 50,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Zero-based index of the first match to return.",
+                    "default": 0,
                 },
             },
             "required": ["query"]
@@ -332,10 +345,23 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
 
     if name == "notes_search":
         query = arguments["query"]
+        count = int(arguments.get("count", 50))
+        offset = int(arguments.get("offset", 0))
         raw = await _run_script("search", query)
-        notes = [n for n in (_parse_note(line)
-                             for line in raw.splitlines()) if n]
-        return [TextContent(type="text", text=json.dumps(notes, indent=2))]
+        matches = [n for n in (_parse_note(line)
+                               for line in raw.splitlines()) if n]
+        # Paginate: a broad query can match many notes, and an unbounded
+        # response overflows the client's payload limit.
+        total = len(matches)
+        page = matches[offset:offset + count] if count >= 0 else matches[offset:]
+        return [TextContent(type="text", text=json.dumps({
+            "status": "ok",
+            "total": total,
+            "offset": offset,
+            "returned": len(page),
+            "has_more": offset + len(page) < total,
+            "notes": page,
+        }, indent=2))]
 
     if name == "notes_create":
         title = arguments["title"]
