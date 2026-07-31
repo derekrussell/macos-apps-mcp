@@ -1,6 +1,6 @@
 """Apple Mail tools for the MCP server.
 
-Exposes eight tools that let the client read, organise, and delete
+Exposes nine tools that let the client read, organise, and delete
 emails in Apple Mail via AppleScript:
 
   mail_get_messages    — List messages in a mailbox, with pagination
@@ -11,6 +11,7 @@ emails in Apple Mail via AppleScript:
   mail_move            — Move a message to another mailbox
   mail_delete          — Move a message to the Trash
   mail_rename_mailbox  — Rename a mailbox (deletion isn't scriptable in Mail)
+  mail_create_mailbox  — Create a mailbox under an account
 
 AppleScript is invoked via osascript, passing scripts/mail.applescript
 as the script file and an action keyword as the first argument. All
@@ -286,6 +287,34 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["mailbox", "new_name"],
+        },
+    ),
+    Tool(
+        name="mail_create_mailbox",
+        description=(
+            "Create a mailbox in Apple Mail under an existing account. "
+            "mailbox is an account-qualified path: the first segment is the "
+            "account name (as shown by mail_list_mailboxes, e.g. 'iCloud') and the "
+            "rest is the mailbox to create — 'iCloud/Receipts', or nested "
+            "'iCloud/Projects/2026' (missing intermediate parents are created "
+            "automatically). "
+            "Idempotent: if the mailbox already exists it is left unchanged. "
+            "Returns a JSON object {status, path, created}, where created is false "
+            "if it already existed. "
+            "Note: creation syncs to iCloud/IMAP, but a mailbox cannot be DELETED "
+            "via AppleScript (a long-standing Mail limitation) — deletion is "
+            "manual, and mail_rename_mailbox is the way to flag one — so create "
+            "deliberately."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mailbox": {
+                    "type": "string",
+                    "description": "Account-qualified path to create, e.g. 'iCloud/Receipts' or 'iCloud/Projects/2026'. The first segment is the account name."
+                },
+            },
+            "required": ["mailbox"],
         },
     ),
 ]
@@ -636,5 +665,15 @@ async def handle(name: str, arguments: dict) -> list[TextContent]:
             )
         new_path = await _run_script("rename_mailbox", mailbox, new_name)
         return [TextContent(type="text", text=f"Renamed '{mailbox}' to '{new_path}'.")]
+
+    if name == "mail_create_mailbox":
+        mailbox = arguments["mailbox"]
+        raw = await _run_script("create_mailbox", mailbox)
+        state, _, path = raw.partition("|")
+        return [TextContent(type="text", text=json.dumps({
+            "status": "ok",
+            "path": path,
+            "created": state == "created",
+        }, indent=2))]
 
     raise ValueError(f"Unknown mail tool: '{name}'.")
