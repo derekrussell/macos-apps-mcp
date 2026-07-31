@@ -26,7 +26,10 @@ config.py                  (empty)
   `osascript scripts/<domain>.applescript <action> <args...>`. It normalises CR/CRLF
   (so a stray CR can't shift pipe fields) and, on timeout, kills **and reaps** the
   child (an osascript blocked in an Apple event ignores SIGKILL until the event
-  returns, so the wait is bounded).
+  returns, so the wait is bounded). On a non-zero exit it raises the *unwrapped*
+  error via `clean_osascript_error` (`tools/_osascript.py`) — stripping the script
+  path, char offsets, and numeric code osascript prepends — with a raw-text
+  fallback.
 - **Shared handlers:** each script calls `load_utilities()` to load
   `utilities.applescript` by a path resolved relative to `path to me`, then calls e.g.
   `util's format_date(...)`. Inside a `tell application` block these need

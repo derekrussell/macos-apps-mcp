@@ -36,6 +36,8 @@ from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
+from ._osascript import clean_osascript_error
+
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _REMINDERS_SCRIPT = _SCRIPTS_DIR / "reminders.applescript"
 
@@ -297,10 +299,7 @@ async def _run_script(action: str, *args: str, timeout: float = 60.0) -> str:
         raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"osascript error (action={action!r}): "
-            f"{stderr.decode().strip()}"
-        )
+        raise RuntimeError(clean_osascript_error(stderr.decode()))
 
     return stdout.decode().replace('\r\n', '\n').replace('\r', '\n').strip()
 
