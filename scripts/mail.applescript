@@ -359,8 +359,9 @@ on rename_mailbox(mailboxName, newName)
         set name of targetMailbox to newName
     end tell
     -- After renaming, `targetMailbox` is a stale by-name specifier (its old name
-    -- no longer resolves), so don't re-read it. A rename keeps the mailbox in the
-    -- same parent, so the new path is the input path's parent + the new leaf.
+    -- no longer resolves — re-reading it throws -1728, errAENoSuchObject), so
+    -- don't re-read it. A rename keeps the mailbox in the same parent, so the new
+    -- path is the input path's parent + the new leaf.
     set AppleScript's text item delimiters to "/"
     set parts to text items of mailboxName
     if (count of parts) > 1 then
