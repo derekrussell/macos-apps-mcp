@@ -98,7 +98,10 @@ EventKit** (see gotchas). Instead:
   ops that are broken. So there is **no `mail_delete_mailbox`**; deletion must be
   done manually in Mail.app (right-click → Delete Mailbox). Mailbox *rename* and
   *create* do work, so `mail_rename_mailbox` is provided as the way to flag a
-  mailbox for manual deletion (e.g. prefix "DELETE ME - ").
+  mailbox for manual deletion (e.g. prefix "DELETE ME - "). It returns the new
+  account-qualified path — built from the input path's parent + the new leaf,
+  because after `set name` the resolved mailbox is a stale by-name specifier that
+  can no longer be re-read (reading it throws `-1728`).
 
 ## Run & verify
 
