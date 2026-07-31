@@ -273,7 +273,7 @@ end search_reminders
 -- side to hold in memory. Output is pipe-delimited:
 --   id|title|list|due_date|is_completed
 --
--- Reads each field in bulk per list (id, name, due date, completed) — a handful
+-- Reads each field in bulk per list (id, name, due date, completed) - a handful
 -- of Apple events per list rather than one per reminder. Notes are deliberately
 -- excluded: reading every body is what pushes a full scan past the client
 -- timeout, and this runs in the background where cost affects only freshness.
@@ -308,7 +308,7 @@ end build_index
 
 
 -- Create a new reminder in the named list.
--- Returns "id|list" — the created reminder's id and the RESOLVED list name (so
+-- Returns "id|list" - the created reminder's id and the RESOLVED list name (so
 -- "default" becomes e.g. "Reminders"), which lets the caller seed its search
 -- index with the real list name rather than the raw argument.
 -- Pass empty string for due_date or notes to omit them.
