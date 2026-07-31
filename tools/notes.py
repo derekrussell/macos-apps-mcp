@@ -31,6 +31,8 @@ from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
+from ._osascript import clean_osascript_error
+
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _NOTES_SCRIPT = _SCRIPTS_DIR / "notes.applescript"
 
@@ -255,10 +257,7 @@ async def _run_script(action: str, *args: str) -> str:
         raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"osascript error (action={action!r}): "
-            f"{stderr.decode().strip()}"
-        )
+        raise RuntimeError(clean_osascript_error(stderr.decode()))
 
     # Normalise line endings so splitlines() does not treat a stray CR as a
     # record boundary and shift fields (mirrors the mail/reminders tools).

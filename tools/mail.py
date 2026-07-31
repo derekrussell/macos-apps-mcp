@@ -35,6 +35,8 @@ from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
+from ._osascript import clean_osascript_error
+
 # Path to the AppleScript that handles all mail actions.
 # Resolved relative to this file so it works regardless of the
 # working directory the server is launched from.
@@ -59,7 +61,12 @@ TOOLS: list[Tool] = [
             "true to filter to unread messages only. Set mailbox to query "
             "a different mailbox by its account-qualified path. "
             "Page through large mailboxes by incrementing offset by count "
-            "until has_more is false."
+            "until has_more is false. "
+            "Messages are returned in Mail's native order (roughly most-recently-"
+            "received first), which is NOT strictly sorted by the returned date "
+            "(the sent date), so two messages sent seconds apart can appear out of "
+            "order. To reliably select messages by date, use mail_search with "
+            "since/until rather than taking the top of this list."
         ),
         inputSchema={
             "type": "object",
@@ -327,10 +334,7 @@ async def _run_script(action: str, *args: str) -> str:
         raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"osascript error (action={action!r}): "
-            f"{stderr.decode().strip()}"
-        )
+        raise RuntimeError(clean_osascript_error(stderr.decode()))
 
     # Normalise line endings so splitlines() does not treat a stray CR as a
     # record boundary and shift fields (mirrors the reminders/notes tools).
