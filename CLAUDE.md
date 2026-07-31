@@ -105,16 +105,20 @@ EventKit** (see gotchas). Instead:
   account-qualified path — built from the input path's parent + the new leaf,
   because after `set name` the resolved mailbox is a stale by-name specifier that
   can no longer be re-read (reading it throws `-1728`).
-- **Mailbox creation (`mail_create_mailbox`) must target the account with a
-  slash-in-name.** The only form that works is `make new mailbox at end of
-  mailboxes of account <acct> with properties {name:"<within-account path>"}` —
-  the slash in the name builds the hierarchy under the account and auto-creates
-  missing parents. Pitfalls found: a bare `make new mailbox {name:"iCloud/X"}`
-  creates a *local* mailbox (plus a stray local "iCloud" parent), and nesting via
-  `at end of mailboxes of <parent mailbox>` fails `-10000`. Creation is idempotent
-  in the tool (existing path → `created:false`). Beware: created test mailboxes
-  can't be deleted programmatically — rename them "DELETE ME - " and delete in
-  Mail.app.
+- **Mailbox creation (`mail_create_mailbox`) targets the account with a
+  slash-in-name, one level at a time.** The only form that works is `make new
+  mailbox at end of mailboxes of account <acct> with properties
+  {name:"<within-account path>"}`. Pitfalls found: a bare `make new mailbox
+  {name:"iCloud/X"}` creates a *local* mailbox (plus a stray local "iCloud"
+  parent), and nesting via `at end of mailboxes of <parent mailbox>` fails
+  `-10000`. Crucially, passing a full nested path in ONE `make` auto-creates any
+  missing intermediate as an IMAP `\NoSelect` container (holds children but not
+  messages; not in `mail_list_mailboxes`; not a valid move destination or
+  resolvable path). So the handler creates each level **explicitly, top-down**,
+  skipping existing ones — every intermediate ends up a real selectable mailbox.
+  Creation is idempotent (existing path → `created:false`). Beware: created test
+  mailboxes can't be deleted programmatically — rename them "DELETE ME - " and
+  delete in Mail.app.
 
 ## Run & verify
 
