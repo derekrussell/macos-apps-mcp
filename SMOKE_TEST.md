@@ -82,7 +82,7 @@ that is just the scratch reminder.
 | 17 | `mail_get_messages` | Page the inbox (`count`/`offset`). Choose a **disposable** target message. | Envelope + ISO dates + `is_read`. Ordering follows Mail's native (received) order, **not** strictly the reported sent date — don't rely on "top = newest sent". |
 | 18 | `mail_search` | Find the disposable message by `sender` (and/or `subject`). Test `count`/`offset` on a broad match, a `since`/`until` window, and `unread_only`-alone rejection. | Envelope shape; AND semantics across criteria; pagination; `unread_only` with no other criterion is rejected with a clear message. Body search (`body:`) works but is slower. |
 | 19 | `mail_get_body` | Fetch the full body of a message. | Clean plain text. **Non-mutating** — read state unchanged afterward. |
-| 20 | `mail_create_mailbox` | Create `iCloud/MCP Test Run <N>` (top-level). Then a nested child `…/Sub`. Then a path with a **genuinely missing intermediate**, e.g. `…/Deep/Deeper` where `Deep` does not yet exist, to exercise auto-parent creation. Then an idempotent repeat, and error paths (unknown account; non-account-qualified name). | Returns `{status, path, created}`; `created:true` first time, `false` on repeat. The missing intermediate is auto-created. Bad account and non-account-qualified inputs raise clear, unwrapped errors (no script path/offsets leaked). Note: an auto-created intermediate is a non-selectable container — see known limitations. |
+| 20 | `mail_create_mailbox` | Create `iCloud/MCP Test Run <N>` (top-level). Then a nested child `…/Sub`. Then a path with a **genuinely missing intermediate**, e.g. `…/Deep/Deeper` where `Deep` does not yet exist, to exercise auto-parent creation. Then an idempotent repeat, and error paths (unknown account; non-account-qualified name). | Returns `{status, path, created}`; `created:true` first time, `false` on repeat. The missing intermediate `Deep` is created as a normal **selectable** mailbox — confirm both `mail_count_messages(iCloud/MCP Test Run <N>/Deep)` (returns 0, not "not found") and its presence in `mail_list_mailboxes`. Bad account and non-account-qualified inputs raise clear, unwrapped errors (no script path/offsets leaked). |
 | 21 | `mail_move` | Move the disposable target message **into `iCloud/MCP Test Run <N>`** (created in step 20). | Counts change correctly: destination 0 → 1, inbox −1. |
 | 22 | `mail_delete` | Delete (Trash) the disposable target. | Destination back to 0; message located in Trash (e.g. via `mail_search`), recoverable. |
 | 23 | `mail_rename_mailbox` | Rename `iCloud/MCP Test Run <N>` → `DELETE ME - MCP Test Run <N>`. Also test a `new_name` containing `/` (rejected) and a non-existent source (rejected). | Returns the new account-qualified path; the whole subtree re-parents and is still addressable at the new path. `/` in `new_name` and a missing source are both rejected with clear messages. |
@@ -103,11 +103,6 @@ that is just the scratch reminder.
 - **`mail_get_messages` order** is Mail's native received-date order, not strictly the
   reported sent date; use `mail_search` with `since`/`until` for date-precise selection.
 - **Notes "Recently Deleted"** only appears when it contains notes.
-- **`mail_create_mailbox` auto-created intermediates are non-selectable.** Creating
-  `A/B/C` when `A` is missing makes `A` an IMAP `\NoSelect` container: it holds children
-  but cannot hold messages, does not appear in `mail_list_mailboxes`, and can't be a
-  `mail_move` destination or resolved by path. Create intermediate levels explicitly if
-  you need them addressable. (Apple/IMAP behaviour, not a server or tool bug.)
 
 ---
 

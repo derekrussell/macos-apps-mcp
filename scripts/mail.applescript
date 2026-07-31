@@ -382,13 +382,19 @@ end rename_mailbox
 -- The first path segment is the account name; the rest is the mailbox to create.
 -- Output: "created|<path>" when made, or "exists|<path>" when already present.
 --
--- Mail creates the mailbox (and any missing intermediate parents) when the name
--- passed to `make new mailbox at end of mailboxes of <account>` contains "/".
--- (Nesting via `at end of mailboxes of <parent mailbox>` instead fails -10000,
--- and a bare `make new mailbox {name:"acct/x"}` creates a LOCAL mailbox - this
--- account-targeted, slash-in-name form is the one that works.)
+-- Creation is via `make new mailbox at end of mailboxes of <account> with
+-- properties {name:"<within-account path>"}`. (Nesting via `at end of mailboxes
+-- of <parent mailbox>` fails -10000, and a bare `make new mailbox {name:"acct/x"}`
+-- creates a LOCAL mailbox - this account-targeted form is the one that works.)
+--
+-- Each level of a nested path is created EXPLICITLY, top-down, skipping levels
+-- that already exist. Passing a full nested path to a single `make` would let
+-- Mail auto-create the missing intermediates as IMAP \NoSelect containers -
+-- they hold children but not messages, don't appear in mail_list_mailboxes, and
+-- can't be a move destination or resolved by path. Creating each level while its
+-- parent already exists keeps every level a real, selectable mailbox.
 on create_mailbox(mailboxName)
-    -- Split the account (first segment) from the within-account path.
+    -- Split the account (first segment) from the within-account segments.
     set AppleScript's text item delimiters to "/"
     set parts to text items of mailboxName
     if (count of parts) < 2 then
@@ -396,10 +402,10 @@ on create_mailbox(mailboxName)
         error "mailbox must be an account-qualified path, e.g. 'iCloud/Receipts'"
     end if
     set acctName to item 1 of parts
-    set relPath to (items 2 thru -1 of parts) as text
+    set segs to items 2 thru -1 of parts
     set AppleScript's text item delimiters to ""
 
-    -- Idempotent: if it already exists, report so instead of duplicating.
+    -- Idempotent: if the full path already exists, report it unchanged.
     try
         set existing to resolve_mailbox(mailboxName)
         return "exists|" & (my mailbox_path(existing))
@@ -409,9 +415,28 @@ on create_mailbox(mailboxName)
         if acctName is not in (name of every account) then
             error "No such account '" & acctName & "'. Use the account name shown by mail_list_mailboxes (the first path segment)."
         end if
-        make new mailbox at end of mailboxes of account acctName with properties {name:relPath}
     end tell
-    delay 1
+
+    -- Create each cumulative level explicitly, top-down, skipping existing ones.
+    set prefix to ""
+    repeat with i from 1 to (count of segs)
+        if i is 1 then
+            set prefix to item i of segs
+        else
+            set prefix to prefix & "/" & (item i of segs)
+        end if
+        set levelExists to false
+        try
+            resolve_mailbox(acctName & "/" & prefix)
+            set levelExists to true
+        end try
+        if not levelExists then
+            tell application "Mail"
+                make new mailbox at end of mailboxes of account acctName with properties {name:prefix}
+            end tell
+            delay 1
+        end if
+    end repeat
 
     -- Confirm and return the canonical path of the created mailbox.
     set created to resolve_mailbox(mailboxName)
