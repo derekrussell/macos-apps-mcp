@@ -15,6 +15,7 @@
 --   move            <message_id> <mailbox>         -> (no output)
 --   delete          <message_id>                   -> (no output)
 --   rename_mailbox  <mailbox> <new_name>           -> new account-qualified path
+--   create_mailbox  <mailbox>                       -> "created|path" or "exists|path"
 
 -- Shared handlers (sanitise_field, format_date), loaded once per invocation.
 property util : missing value
@@ -54,6 +55,8 @@ on run argv
         delete_message(item 2 of argv)
     else if action is "rename_mailbox" then
         return rename_mailbox(item 2 of argv, item 3 of argv)
+    else if action is "create_mailbox" then
+        return create_mailbox(item 2 of argv)
     else
         error "Unknown action: " & action
     end if
@@ -349,7 +352,7 @@ end delete_message
 -- Rename a mailbox (change its leaf name; it stays in the same account/parent).
 -- Returns the new account-qualified path.
 --
--- Mail's AppleScript interface cannot DELETE a mailbox — `delete` fails with a
+-- Mail's AppleScript interface cannot DELETE a mailbox - `delete` fails with a
 -- generic "-10000" for every mailbox type (local, POP, IMAP/iCloud), a
 -- long-standing limitation across macOS versions. Renaming DOES work, so it is
 -- the supported way to flag a mailbox for manual deletion in Mail.app.
@@ -359,7 +362,7 @@ on rename_mailbox(mailboxName, newName)
         set name of targetMailbox to newName
     end tell
     -- After renaming, `targetMailbox` is a stale by-name specifier (its old name
-    -- no longer resolves — re-reading it throws -1728, errAENoSuchObject), so
+    -- no longer resolves - re-reading it throws -1728, errAENoSuchObject), so
     -- don't re-read it. A rename keeps the mailbox in the same parent, so the new
     -- path is the input path's parent + the new leaf.
     set AppleScript's text item delimiters to "/"
@@ -373,3 +376,44 @@ on rename_mailbox(mailboxName, newName)
     set AppleScript's text item delimiters to ""
     return newPath
 end rename_mailbox
+
+
+-- Create a mailbox under an existing account, given an account-qualified path.
+-- The first path segment is the account name; the rest is the mailbox to create.
+-- Output: "created|<path>" when made, or "exists|<path>" when already present.
+--
+-- Mail creates the mailbox (and any missing intermediate parents) when the name
+-- passed to `make new mailbox at end of mailboxes of <account>` contains "/".
+-- (Nesting via `at end of mailboxes of <parent mailbox>` instead fails -10000,
+-- and a bare `make new mailbox {name:"acct/x"}` creates a LOCAL mailbox - this
+-- account-targeted, slash-in-name form is the one that works.)
+on create_mailbox(mailboxName)
+    -- Split the account (first segment) from the within-account path.
+    set AppleScript's text item delimiters to "/"
+    set parts to text items of mailboxName
+    if (count of parts) < 2 then
+        set AppleScript's text item delimiters to ""
+        error "mailbox must be an account-qualified path, e.g. 'iCloud/Receipts'"
+    end if
+    set acctName to item 1 of parts
+    set relPath to (items 2 thru -1 of parts) as text
+    set AppleScript's text item delimiters to ""
+
+    -- Idempotent: if it already exists, report so instead of duplicating.
+    try
+        set existing to resolve_mailbox(mailboxName)
+        return "exists|" & (my mailbox_path(existing))
+    end try
+
+    tell application "Mail"
+        if acctName is not in (name of every account) then
+            error "No such account '" & acctName & "'. Use the account name shown by mail_list_mailboxes (the first path segment)."
+        end if
+        make new mailbox at end of mailboxes of account acctName with properties {name:relPath}
+    end tell
+    delay 1
+
+    -- Confirm and return the canonical path of the created mailbox.
+    set created to resolve_mailbox(mailboxName)
+    return "created|" & (my mailbox_path(created))
+end create_mailbox

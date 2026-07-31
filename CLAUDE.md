@@ -35,11 +35,11 @@ config.py                  (empty)
   `util's format_date(...)`. Inside a `tell application` block these need
   `my (util's ...)`.
 
-## Tools (22)
+## Tools (23)
 
-**Mail (8):** `mail_get_messages` · `mail_search` · `mail_count_messages` ·
+**Mail (9):** `mail_get_messages` · `mail_search` · `mail_count_messages` ·
 `mail_list_mailboxes` · `mail_get_body` · `mail_move` · `mail_delete` ·
-`mail_rename_mailbox`
+`mail_rename_mailbox` · `mail_create_mailbox`
 
 **Reminders (7):** `reminder_list_lists` · `reminder_get` · `reminder_search` ·
 `reminder_create` · `reminder_complete` · `reminder_update` · `reminder_delete`
@@ -105,6 +105,16 @@ EventKit** (see gotchas). Instead:
   account-qualified path — built from the input path's parent + the new leaf,
   because after `set name` the resolved mailbox is a stale by-name specifier that
   can no longer be re-read (reading it throws `-1728`).
+- **Mailbox creation (`mail_create_mailbox`) must target the account with a
+  slash-in-name.** The only form that works is `make new mailbox at end of
+  mailboxes of account <acct> with properties {name:"<within-account path>"}` —
+  the slash in the name builds the hierarchy under the account and auto-creates
+  missing parents. Pitfalls found: a bare `make new mailbox {name:"iCloud/X"}`
+  creates a *local* mailbox (plus a stray local "iCloud" parent), and nesting via
+  `at end of mailboxes of <parent mailbox>` fails `-10000`. Creation is idempotent
+  in the tool (existing path → `created:false`). Beware: created test mailboxes
+  can't be deleted programmatically — rename them "DELETE ME - " and delete in
+  Mail.app.
 
 ## Run & verify
 
