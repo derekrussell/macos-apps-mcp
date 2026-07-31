@@ -124,9 +124,10 @@ EventKit** (see gotchas). Instead:
 - **AppleScript parse check:** `osascript scripts/<domain>.applescript` with no args —
   a fast `Can't get item 1 of {}` (-1728) means it compiled (that's the argv access,
   after successful parse).
-- **No automated test suite.** Validation is a manual 22-tool smoke sequence; reports
-  live under `~/Desktop/apple_mcp/`. When testing reminder/mail search, prefer a
-  freshly restarted machine and avoid rapid repeated Reminders scans.
+- **No automated test suite.** Validation is the manual 23-tool sequence in
+  `SMOKE_TEST.md` (keep that file in sync when adding/removing a tool); run reports live
+  under `~/Desktop/apple_mcp/`. When testing reminder/mail search, prefer a freshly
+  restarted machine and avoid rapid repeated Reminders scans.
 
 ## Git
 
