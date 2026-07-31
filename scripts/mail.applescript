@@ -358,5 +358,17 @@ on rename_mailbox(mailboxName, newName)
     tell application "Mail"
         set name of targetMailbox to newName
     end tell
-    return my mailbox_path(targetMailbox)
+    -- After renaming, `targetMailbox` is a stale by-name specifier (its old name
+    -- no longer resolves), so don't re-read it. A rename keeps the mailbox in the
+    -- same parent, so the new path is the input path's parent + the new leaf.
+    set AppleScript's text item delimiters to "/"
+    set parts to text items of mailboxName
+    if (count of parts) > 1 then
+        set parentPath to (items 1 thru -2 of parts) as text
+        set newPath to parentPath & "/" & newName
+    else
+        set newPath to newName
+    end if
+    set AppleScript's text item delimiters to ""
+    return newPath
 end rename_mailbox
