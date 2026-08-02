@@ -134,9 +134,9 @@ Result: <P> PASS / <F> FAIL
 | 17 | mail_get_messages | | |
 | 18 | mail_search | | |
 | 19 | mail_get_body | | |
-| 20 | mail_move | | |
-| 21 | mail_delete | | |
-| 22 | mail_create_mailbox | | |
+| 20 | mail_create_mailbox | | |
+| 21 | mail_move | | |
+| 22 | mail_delete | | |
 | 23 | mail_rename_mailbox | | |
 ```
 
