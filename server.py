@@ -1,23 +1,23 @@
 """MCP server entry point for the Apple Assistant.
 
-This module starts a Model Context Protocol (MCP) server over stdio,
-registers all available tools, and routes incoming tool calls to the
-correct handler module.
+This module starts a Model Context Protocol (MCP) server over stdio, registers
+every available tool, and routes each incoming tool call to the correct handler
+module.
 
-Transport: stdio — the standard MCP transport, compatible with any
-    MCP client (Claude Desktop, Cursor, Zed, VS Code, etc.)
-SDK: mcp (https://github.com/modelcontextprotocol/python-sdk)
+Transport: stdio -- the standard MCP transport, compatible with any MCP client
+    (Claude Desktop, Cursor, Zed, VS Code, etc.).
+SDK: mcp (https://github.com/modelcontextprotocol/python-sdk).
 
-Note:
-    The tools registered here rely on AppleScript and are therefore
-    macOS-specific. The server architecture itself is platform-agnostic.
+The tools rely on AppleScript and are therefore macOS-specific; the server
+architecture itself is platform-agnostic.
 
-Tool namespacing convention:
-    mail_*      → tools/mail.py
-    note_*      → tools/notes.py
-    reminder_*  → tools/reminders.py
-    file_*      → tools/filesystem.py
+Tool namespacing convention -- a tool's name prefix selects its module:
+    mail_*      -> tools/mail.py
+    notes_*     -> tools/notes.py
+    reminder_*  -> tools/reminders.py
+    file_*      -> tools/filesystem.py
 """
+
 import asyncio
 
 from mcp.server import Server
@@ -25,86 +25,96 @@ from mcp.server.stdio import stdio_server
 
 from tools import filesystem, mail, notes, reminders
 
-# ------------------------------------------------------------
-# Server instance
-# ------------------------------------------------------------
+# Map each tool-name prefix to the module that implements those tools. The
+# prefixes are mutually exclusive, so lookup order does not matter. Adding a new
+# domain is a single entry here.
+MODULE_BY_TOOL_PREFIX = {
+    "mail_": mail,
+    "notes_": notes,
+    "reminder_": reminders,
+    "file_": filesystem,
+}
 
 app = Server("apple-assistant")
 
+
 # ------------------------------------------------------------
-# Tool registry
+# Routing helpers (pure enough to unit-test without the MCP app)
 # ------------------------------------------------------------
 
+def select_tool_module(tool_name: str):
+    """Return the handler module responsible for a tool name, chosen by prefix.
+
+    Args:
+        tool_name: The full tool name, e.g. "mail_search".
+
+    Returns:
+        The module (mail, notes, reminders, or filesystem) that handles it.
+
+    Raises:
+        ValueError: If no registered prefix matches the name.
+    """
+    for prefix, module in MODULE_BY_TOOL_PREFIX.items():
+        if tool_name.startswith(prefix):
+            return module
+    raise ValueError(f"Unknown tool: {tool_name!r}.")
+
+
+async def collect_tool_definitions():
+    """Gather the Tool definitions from every handler module into one list.
+
+    Called on startup so the client can discover every action the server
+    provides. Each module keeps its own definitions co-located with their
+    implementation.
+    """
+    definitions = []
+    for module in MODULE_BY_TOOL_PREFIX.values():
+        definitions += await module.list_tools()
+    return definitions
+
+
+# ------------------------------------------------------------
+# MCP hooks (thin wrappers around the helpers above)
+# ------------------------------------------------------------
 
 @app.list_tools()
 async def list_tools():
-    """Return the combined list of tools from every handler module.
-
-    The client calls this once on startup to discover what the server can do.
-    Each handler module exposes its own list_tools() coroutine so that
-    tool definitions stay co-located with their implementation.
-
-    Returns:
-        A flat list of mcp.types.Tool objects covering all four domains:
-        mail, notes, reminders, and filesystem.
-    """
-    # Aggregate tool definitions from every module.
-    tools = []
-    tools += await mail.list_tools()
-    tools += await notes.list_tools()
-    tools += await reminders.list_tools()
-    tools += await filesystem.list_tools()
-    return tools
-
-# ------------------------------------------------------------
-# Tool dispatcher
-# ------------------------------------------------------------
+    """MCP hook: report every tool this server provides."""
+    return await collect_tool_definitions()
 
 
 @app.call_tool()
-async def dispatch_tool(name: str, arguments: dict):
-    """Route an incoming tool call to the appropriate handler module.
-
-    The client calls this whenever it wants to invoke a tool. The tool
-    name prefix determines which module handles the call — this keeps
-    the routing logic simple and means adding a new domain is just one
-    line.
+async def call_tool(name: str, arguments: dict):
+    """MCP hook: route an incoming tool call to its handler module.
 
     Args:
-        name: The tool name as registered in list_tools(), e.g.
-            "mail_get_unread".
-        arguments: A dict of validated arguments provided by Claude.
+        name:      The tool name registered in list_tools(), e.g. "mail_search".
+        arguments: The validated arguments provided by the client.
 
     Returns:
-        A list of mcp.types.TextContent (or other content types) returned
-        by the handler. The client renders these as part of its response.
-
-    Raises:
-        ValueError: If the tool name doesn't match any known prefix.
+        The list of MCP content objects returned by the handler.
     """
-    if name.startswith("file_"):
-        return await filesystem.handle(name, arguments)
-    if name.startswith("mail_"):
-        return await mail.handle(name, arguments)
-    if name.startswith("notes_"):
-        return await notes.handle(name, arguments)
-    if name.startswith("reminder_"):
-        return await reminders.handle(name, arguments)
-    raise ValueError(f"Unknown tool: '{name}'.")
+    module = select_tool_module(name)
+    return await module.handle(name, arguments)
 
+
+# ------------------------------------------------------------
+# Startup
+# ------------------------------------------------------------
 
 async def main():
-    """Start the MCP server and block until the connection closes.
+    """Start the stdio MCP server and serve until the connection closes.
 
-    stdio_server() provides a pair of async streams that the MCP client
-    communicates over. app.run() handles the MCP handshake, tool
-    discovery, and the call/response loop for the lifetime of the session.
+    ``stdio_server()`` provides the async streams the client communicates over;
+    ``app.run()`` handles the MCP handshake, tool discovery, and the
+    call/response loop for the lifetime of the session.
     """
     async with stdio_server() as streams:
-        # Start building the reminder search index in the background so it is
-        # usually ready before the first reminder_search arrives.
+        # Warm the reminder search index in the background so the first
+        # reminder_search is usually served from a ready index.
         reminders.warm_index()
         await app.run(*streams, app.create_initialization_options())
+
 
 if __name__ == "__main__":
     asyncio.run(main())
