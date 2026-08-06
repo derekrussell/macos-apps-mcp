@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# Put the repo root on sys.path so tests can `import tools...` without an
+# installed package, and keep test discovery scoped to the tests/ directory.
+pythonpath = ["."]
+testpaths = ["tests"]
