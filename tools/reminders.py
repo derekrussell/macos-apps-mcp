@@ -1,45 +1,57 @@
 """Apple Reminders tools for the MCP server.
 
-Exposes seven tools that lets the client read, create, update, and
-delete reminders in Apple Reminders via AppleScript:
+Exposes seven tools that let the client read, create, update, and delete
+reminders in Apple Reminders via AppleScript:
 
     reminder_list_lists  — List all reminder lists
     reminder_get         — Fetch reminders from a list, with pagination
-    reminder_search      — Searcg reminders by text across all lists
+    reminder_search      — Search reminders by text across all lists
     reminder_create      — Create a new reminder
     reminder_complete    — Mark a reminder as complete
     reminder_update      — Update the title, due date, notes, or list
     reminder_delete      — Delete a reminder
 
-AppleScript is invoked via osascript, passing
-scripts/reminders.applescript as the script file and an action
-keyword as the first argument
+AppleScript is invoked via osascript, passing scripts/reminders.applescript as
+the script file and an action keyword as the first argument.
 
 Note:
-    Reminder IDs used by these tools are the internal id values
-    assigned by Apple Reminders. Always use the id field returned
-    by reminder_get or reminder_search when calling the mutation
-    tools (reminder_complete, reminder_update, reminder_delete).
+    Reminder IDs used by these tools are the internal id values assigned by
+    Apple Reminders. Always use the id field returned by reminder_get or
+    reminder_search when calling the mutation tools (reminder_complete,
+    reminder_update, reminder_delete).
 
-    Due dates are expressed in ISO 8601 format:
-    "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS".
-    Pass an empty string to clear a due date in reminder_update.
+    Due dates are expressed in ISO 8601 format: "YYYY-MM-DD" or
+    "YYYY-MM-DDTHH:MM:SS". An existing due date cannot be cleared through
+    AppleScript, so reminder_update leaves it unchanged when omitted.
 
-    Pass "default" as the list name to target the user's default
-    Reminders list without needing to know its name.
+    Pass "default" as the list name to target the user's default Reminders list
+    without needing to know its name.
 """
 
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
-from ._osascript import clean_osascript_error
+from ._osascript import DEFAULT_TIMEOUT_SECONDS, run_osascript
 
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _REMINDERS_SCRIPT = _SCRIPTS_DIR / "reminders.applescript"
+
+# Sentinel the Python layer sends for reminder_update's due date when the caller
+# omitted it, so the AppleScript can tell "leave unchanged" apart from an
+# explicit value. Must match the sentinel handled in reminders.applescript.
+_KEEP_DUE_DATE = "__KEEP__"
+
+# Seconds a served index may age before a search triggers a background refresh.
+_INDEX_TTL_SECONDS = 90.0
+
+# Generous timeout for the background index build. No client is awaiting it, so a
+# slow scan only delays freshness rather than causing a user-facing timeout.
+_INDEX_BUILD_TIMEOUT_SECONDS = 240.0
 
 # ------------------------------------------------------------
 # Section B — Tool definitions
@@ -258,64 +270,59 @@ TOOLS: list[Tool] = [
     ),
 ]
 
+
 # ------------------------------------------------------------
-# Section C — Private helpers
+# Section C — osascript wrapper
 # ------------------------------------------------------------
 
-
-async def _run_script(action: str, *args: str, timeout: float = 60.0) -> str:
-    """Run reminders.applescript with the given action and arguments.
-
-    Args:
-        action:  The action keyword the AppleScript handler dispatches on.
-        *args:   Zero or more additional string arguments.
-        timeout: Seconds to wait before killing osascript. Defaults to 60s to
-                 stay under the MCP client timeout; the background index build
-                 passes a longer budget since no client is awaiting it.
-
-    Returns:
-        The trimmed stdout produced by the script.
-
-    Raises:
-        RuntimeError: If osascript exits with a non-zero return code,
-                      with the stderr output included in the message.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", str(_REMINDERS_SCRIPT), action, *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+async def _run_script(
+    action: str,
+    *arguments: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    """Run reminders.applescript through the shared osascript runner."""
+    return await run_osascript(
+        _REMINDERS_SCRIPT, action, *arguments, timeout=timeout
     )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        # Reap the killed child so it does not linger and hold its pipes open.
-        # An osascript blocked inside a synchronous Apple event ignores SIGKILL
-        # until that event returns, so bound the wait rather than hang here.
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
-        raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
-    if proc.returncode != 0:
-        raise RuntimeError(clean_osascript_error(stderr.decode()))
 
-    return stdout.decode().replace('\r\n', '\n').replace('\r', '\n').strip()
+# ------------------------------------------------------------
+# Section D — MCP content helpers
+# ------------------------------------------------------------
+
+def _json_content(payload) -> list[TextContent]:
+    """Wrap a JSON-serialisable payload as a single MCP text content item."""
+    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+
+def _text_content(text: str) -> list[TextContent]:
+    """Wrap a plain string as a single MCP text content item."""
+    return [TextContent(type="text", text=text)]
+
+
+# ------------------------------------------------------------
+# Section E — Output parsers (pure)
+# ------------------------------------------------------------
+
+def _parse_list_line(line: str) -> dict | None:
+    """Parse one "name|count" reminder-list line into a dict.
+
+    Returns None if the line does not split into exactly two fields.
+    """
+    parts = line.split("|", maxsplit=1)
+    if len(parts) != 2:
+        return None
+    name, count_text = parts
+    return {"name": name, "count": int(count_text)}
 
 
 def _parse_reminder(line: str) -> dict | None:
     """Parse one pipe-delimited reminder record into a dict.
 
-    Expected format:
-        id|title|due_date|notes|is_completed|list
+    Expected format: id|title|due_date|notes|is_completed|list
 
-    Args:
-        line: A single line of AppleScript output.
-
-    Returns:
-        A dict with keys id, title, due_date, notes, is_completed, and list. due_date is None if the field is empty.
-        Returns None if the line does not contain exactly 6 fields.
+    Empty due_date/notes become None. Returns None if the line does not contain
+    exactly six fields.
     """
     parts = line.split("|", maxsplit=5)
     if len(parts) != 6:
@@ -324,303 +331,447 @@ def _parse_reminder(line: str) -> dict | None:
     return {
         "id": reminder_id,
         "title": title,
-        "due_date": due_date if due_date else None,
-        "notes": notes if notes else None,
+        "due_date": due_date or None,
+        "notes": notes or None,
         "is_completed": is_completed == "true",
         "list": list_name,
     }
 
+
+def _paginate(items: list, offset: int, count: int):
+    """Slice ``items`` for offset/count pagination.
+
+    Returns a (page, total, has_more) tuple. A negative count returns everything
+    from ``offset`` onward.
+    """
+    total = len(items)
+    page = items[offset:offset + count] if count >= 0 else items[offset:]
+    has_more = offset + len(page) < total
+    return page, total, has_more
+
+
 # ------------------------------------------------------------
-# Background search index
+# Section F — Background search index
 #
 # reminder_search must never block on an AppleScript scan: on a large account a
 # full scan takes tens of seconds and exceeds the MCP client timeout, and
-# repeated scans cumulatively wedge EventKit until searches stop returning.
-# So searches are served purely from an in-memory index that is (re)built in
-# the BACKGROUND, off the client clock — a search returns instantly from
-# whatever the index currently holds and triggers a refresh only when the data
-# is stale (serve-stale-while-revalidate). Mutations update the index in place
-# so a create-then-search sees the new reminder without waiting for a scan.
+# repeated scans cumulatively wedge EventKit until searches stop returning. So
+# searches are served purely from an in-memory index that is (re)built in the
+# BACKGROUND, off the client clock — a search returns instantly from whatever the
+# index currently holds and triggers a refresh only when the data is stale
+# (serve-stale-while-revalidate). Mutations update the index in place so a
+# create-then-search sees the new reminder without waiting for a scan.
 #
 # The index carries id/title/list/due/completed. Notes are NOT indexed: default
 # search returns the notes field as null. Use search_notes for a live note-text
 # scan (slower, may time out), or reminder_get for a specific reminder's notes.
 # ------------------------------------------------------------
 
-_INDEX_TTL = 90.0            # seconds before a served-stale index triggers a refresh
-_index_cache: list[dict] | None = None
-_index_built_at: float = 0.0
-_index_refreshing: bool = False
+@dataclass
+class IndexedReminder:
+    """A single reminder as held in the in-memory search index."""
+
+    id: str
+    title: str
+    list_name: str
+    due_date: str | None
+    is_completed: bool
+
+
+class ReminderSearchIndex:
+    """An in-memory snapshot of reminders for fast, non-blocking title search.
+
+    Holds no I/O logic of its own, so it can be unit-tested in isolation: build
+    it with ``replace``, mutate it with ``add``/``edit``/``remove``, and query
+    it with ``search``.
+    """
+
+    def __init__(self) -> None:
+        # None means "never built yet"; an empty list means "built and empty".
+        self._reminders: list[IndexedReminder] | None = None
+        self._built_at_monotonic: float = 0.0
+
+    @property
+    def is_built(self) -> bool:
+        """True once the index has been populated at least once."""
+        return self._reminders is not None
+
+    def is_stale(self, ttl_seconds: float, now: float | None = None) -> bool:
+        """True if the index is older than ``ttl_seconds``.
+
+        ``now`` defaults to the current monotonic clock; it is a parameter so
+        staleness can be tested deterministically.
+        """
+        current_time = time.monotonic() if now is None else now
+        return (current_time - self._built_at_monotonic) >= ttl_seconds
+
+    def replace(self, reminders, built_at: float | None = None) -> None:
+        """Replace the whole index with a freshly scanned set of reminders."""
+        self._reminders = list(reminders)
+        self._built_at_monotonic = (
+            time.monotonic() if built_at is None else built_at
+        )
+
+    def add(
+        self,
+        reminder_id: str,
+        title: str,
+        list_name: str,
+        due_date: str,
+        is_completed: bool,
+    ) -> None:
+        """Add a newly created reminder, if the index has been built."""
+        if self._reminders is None:
+            return
+        self._reminders.append(IndexedReminder(
+            id=reminder_id,
+            title=title,
+            list_name=list_name,
+            due_date=due_date or None,
+            is_completed=is_completed,
+        ))
+
+    def remove(self, reminder_id: str) -> None:
+        """Drop a deleted reminder, if the index has been built."""
+        if self._reminders is None:
+            return
+        self._reminders = [
+            reminder for reminder in self._reminders
+            if reminder.id != reminder_id
+        ]
+
+    def edit(
+        self,
+        reminder_id: str,
+        *,
+        title: str | None = None,
+        list_name: str | None = None,
+        due_date: str | None = None,
+        is_completed: bool | None = None,
+    ) -> None:
+        """Apply known field changes to one reminder, if the index is built.
+
+        Only non-empty arguments are applied (a None or "" leaves that field
+        untouched), matching the "omit to keep unchanged" mutation semantics.
+        """
+        if self._reminders is None:
+            return
+        for reminder in self._reminders:
+            if reminder.id != reminder_id:
+                continue
+            if title:
+                reminder.title = title
+            if list_name:
+                reminder.list_name = list_name
+            if due_date:
+                reminder.due_date = due_date
+            if is_completed is not None:
+                reminder.is_completed = is_completed
+            return
+
+    def search(self, query: str, include_completed: bool) -> list[dict]:
+        """Return reminders whose title contains ``query`` (case-insensitive).
+
+        Each result is a dict in the tool's output shape, with notes set to None
+        because notes are not indexed. Returns an empty list if not yet built.
+        """
+        if self._reminders is None:
+            return []
+        lowered_query = query.lower()
+        results = []
+        for reminder in self._reminders:
+            if lowered_query not in reminder.title.lower():
+                continue
+            if not include_completed and reminder.is_completed:
+                continue
+            results.append({
+                "id": reminder.id,
+                "title": reminder.title,
+                "due_date": reminder.due_date,
+                "notes": None,
+                "is_completed": reminder.is_completed,
+                "list": reminder.list_name,
+            })
+        return results
+
+
+# The single process-wide index instance and its background-refresh state.
+_search_index = ReminderSearchIndex()
+_refresh_in_progress = False
+
+
+def _parse_index_line(line: str) -> IndexedReminder | None:
+    """Parse one "id|title|list|due_date|is_completed" index line.
+
+    Returns None if the line does not split into exactly five fields.
+    """
+    parts = line.split("|", maxsplit=4)
+    if len(parts) != 5:
+        return None
+    reminder_id, title, list_name, due_date, completed_flag = parts
+    return IndexedReminder(
+        id=reminder_id,
+        title=title,
+        list_name=list_name,
+        due_date=due_date or None,
+        is_completed=completed_flag == "true",
+    )
 
 
 async def _build_index() -> None:
-    """Rebuild the in-memory reminder index from a background AppleScript scan.
+    """Rebuild the in-memory index from a background AppleScript scan.
 
-    Runs off the client hot path, so a slow or failed scan costs freshness, never
-    a user-facing timeout. The previous index is kept on failure for a later retry.
+    Runs off the client hot path, so a slow or failed scan costs freshness, not
+    a user-facing timeout. The previous index is kept on failure so the next
+    refresh can retry.
     """
-    global _index_cache, _index_built_at, _index_refreshing
+    global _refresh_in_progress
     try:
-        # No client is awaiting this call, so allow a generous budget for the
-        # full-account scan (~45s on a healthy store, but much slower on a
-        # temporarily degraded one). A long build only delays freshness.
-        raw = await _run_script("build_index", timeout=240.0)
-        index: list[dict] = []
-        for line in raw.splitlines():
-            parts = line.split("|", maxsplit=4)
-            if len(parts) == 5:
-                rid, title, list_name, due, done = parts
-                index.append({
-                    "id": rid,
-                    "title": title,
-                    "list": list_name,
-                    "due_date": due or None,
-                    "is_completed": done == "true",
-                })
-        _index_cache = index
-        _index_built_at = time.monotonic()
+        raw = await _run_script(
+            "build_index", timeout=_INDEX_BUILD_TIMEOUT_SECONDS
+        )
+        reminders = [
+            parsed for parsed in
+            (_parse_index_line(line) for line in raw.splitlines())
+            if parsed is not None
+        ]
+        _search_index.replace(reminders)
     except Exception:
         # Keep serving the previous index; the next refresh will retry.
         pass
     finally:
-        _index_refreshing = False
+        _refresh_in_progress = False
 
 
 def _kick_refresh() -> None:
     """Start a background index rebuild unless one is already in flight."""
-    global _index_refreshing
-    if _index_refreshing:
+    global _refresh_in_progress
+    if _refresh_in_progress:
         return
-    _index_refreshing = True
+    _refresh_in_progress = True
     try:
         asyncio.create_task(_build_index())
     except RuntimeError:
         # No running event loop (e.g. imported outside asyncio); allow a retry.
-        _index_refreshing = False
+        _refresh_in_progress = False
 
 
 def warm_index() -> None:
-    """Kick an initial background index build. Called once at server startup so
-    the index is usually ready before the first search arrives."""
+    """Kick an initial background index build.
+
+    Called once at server startup so the index is usually ready before the first
+    search arrives.
+    """
     _kick_refresh()
 
 
-def _index_add(reminder_id, title, list_name, due_date, is_completed) -> None:
-    """Insert a newly created reminder into the live index, if one is built."""
-    if _index_cache is None:
-        return
-    _index_cache.append({
-        "id": reminder_id,
-        "title": title,
-        "list": list_name,
-        "due_date": due_date or None,
-        "is_completed": is_completed,
+# ------------------------------------------------------------
+# Section G — Per-tool handlers
+# ------------------------------------------------------------
+
+async def _handle_list_lists(arguments: dict) -> list[TextContent]:
+    raw = await _run_script("list_lists")
+    lists = [
+        parsed for parsed in
+        (_parse_list_line(line) for line in raw.splitlines())
+        if parsed is not None
+    ]
+    return _json_content(lists)
+
+
+async def _handle_get(arguments: dict) -> list[TextContent]:
+    list_name = arguments.get("list", "default")
+    count = int(arguments.get("count", 50))
+    offset = int(arguments.get("offset", 0))
+    include_completed = bool(arguments.get("include_completed", False))
+
+    raw = await _run_script(
+        "get_reminders",
+        list_name,
+        str(count),
+        str(offset),
+        str(include_completed).lower(),
+    )
+
+    # The script paginates and puts the full matching count on the first line.
+    lines = raw.splitlines() if raw else []
+    total = int(lines[0]) if lines else 0
+    reminders = [
+        parsed for parsed in
+        (_parse_reminder(line) for line in lines[1:])
+        if parsed is not None
+    ]
+    returned = len(reminders)
+    return _json_content({
+        "total": total,
+        "offset": offset,
+        "returned": returned,
+        "has_more": offset + returned < total,
+        "reminders": reminders,
     })
 
 
-def _index_remove(reminder_id) -> None:
-    """Drop a deleted reminder from the live index, if one is built."""
-    global _index_cache
-    if _index_cache is None:
-        return
-    _index_cache = [e for e in _index_cache if e["id"] != reminder_id]
+async def _search_reminder_notes_live(
+    query: str, include_completed: bool
+) -> list[dict]:
+    """Run the opt-in live full-text scan (matches notes as well as titles).
 
-
-def _index_edit(reminder_id, *, title=None, list_name=None,
-                due_date=None, is_completed=None) -> None:
-    """Apply a known field change to a reminder in the live index, if built.
-
-    Only non-None arguments are applied. due_date of "" means unchanged (it
-    cannot be cleared); a real ISO value replaces it.
+    Reads every reminder's body via AppleScript, so it is slow on large accounts
+    and is not served from the index. Populates the notes field.
     """
-    if _index_cache is None:
-        return
-    for e in _index_cache:
-        if e["id"] == reminder_id:
-            if title:
-                e["title"] = title
-            if list_name:
-                e["list"] = list_name
-            if due_date:
-                e["due_date"] = due_date
-            if is_completed is not None:
-                e["is_completed"] = is_completed
-            break
+    raw = await _run_script(
+        "search", query, str(include_completed).lower(), "true"
+    )
+    return [
+        parsed for parsed in
+        (_parse_reminder(line) for line in raw.splitlines())
+        if parsed is not None
+    ]
+
+
+def _warming_search_response(offset: int) -> dict:
+    """The response returned while the index is still building on a cold start."""
+    return {
+        "status": "warming",
+        "total": 0,
+        "offset": offset,
+        "returned": 0,
+        "has_more": False,
+        "reminders": [],
+        "message": "Reminder search index is building; retry in a few seconds.",
+    }
+
+
+async def _handle_search(arguments: dict) -> list[TextContent]:
+    query = arguments["query"]
+    include_completed = bool(arguments.get("include_completed", False))
+    search_notes = bool(arguments.get("search_notes", False))
+    count = int(arguments.get("count", 50))
+    offset = int(arguments.get("offset", 0))
+
+    if search_notes:
+        matches = await _search_reminder_notes_live(query, include_completed)
+    elif not _search_index.is_built:
+        # Cold start: trigger a build and ask the caller to retry rather than
+        # blocking on a scan that could exceed the client timeout. Startup
+        # warm_index() usually makes this branch rare.
+        _kick_refresh()
+        return _json_content(_warming_search_response(offset))
+    else:
+        # Serve instantly from the index; refresh in the background if stale so
+        # the search itself never waits on a scan.
+        if _search_index.is_stale(_INDEX_TTL_SECONDS):
+            _kick_refresh()
+        matches = _search_index.search(query, include_completed)
+
+    page, total, has_more = _paginate(matches, offset, count)
+    return _json_content({
+        "status": "ok",
+        "total": total,
+        "offset": offset,
+        "returned": len(page),
+        "has_more": has_more,
+        "reminders": page,
+    })
+
+
+async def _handle_create(arguments: dict) -> list[TextContent]:
+    title = arguments["title"]
+    list_name = arguments.get("list", "default")
+    due_date = arguments.get("due_date", "")
+    notes = arguments.get("notes", "")
+
+    # create returns "id|resolved_list_name"; use the resolved name so the index
+    # carries the real list (e.g. "Reminders") rather than the "default" alias.
+    raw = await _run_script("create", title, list_name, due_date, notes)
+    reminder_id, _, resolved_list_name = raw.partition("|")
+
+    # Update the index in place so a create-then-search finds the new reminder
+    # immediately. Deliberately do NOT kick a full background rebuild here: that
+    # scan contends with the next mutation's write and can make it time out.
+    _search_index.add(
+        reminder_id=reminder_id,
+        title=title,
+        list_name=resolved_list_name or list_name,
+        due_date=due_date,
+        is_completed=False,
+    )
+    return _text_content(reminder_id)
+
+
+async def _handle_complete(arguments: dict) -> list[TextContent]:
+    reminder_id = arguments["reminder_id"]
+    await _run_script("complete", reminder_id)
+    _search_index.edit(reminder_id, is_completed=True)
+    return _text_content(f"Completed {reminder_id!r}.")
+
+
+async def _handle_update(arguments: dict) -> list[TextContent]:
+    reminder_id = arguments["reminder_id"]
+    title = arguments.get("title", "")
+    notes = arguments.get("notes", "")
+    list_name = arguments.get("list", "")
+    # Distinguish "omitted" (leave unchanged) from an explicit value via the
+    # sentinel, so a title-only update does not touch the due date.
+    due_date = arguments["due_date"] if "due_date" in arguments else _KEEP_DUE_DATE
+
+    await _run_script("update", reminder_id, title, due_date, notes, list_name)
+
+    # Mirror the applied changes in the index. A "__KEEP__"/"" due date means
+    # unchanged, so pass None for it in that case.
+    due_date_changed = due_date not in (_KEEP_DUE_DATE, "")
+    _search_index.edit(
+        reminder_id,
+        title=title or None,
+        list_name=list_name or None,
+        due_date=due_date if due_date_changed else None,
+    )
+    return _text_content(f"Updated {reminder_id!r}.")
+
+
+async def _handle_delete(arguments: dict) -> list[TextContent]:
+    reminder_id = arguments["reminder_id"]
+    await _run_script("delete", reminder_id)
+    _search_index.remove(reminder_id)
+    return _text_content(f"Deleted {reminder_id!r}.")
+
+
+_TOOL_HANDLERS = {
+    "reminder_list_lists": _handle_list_lists,
+    "reminder_get": _handle_get,
+    "reminder_search": _handle_search,
+    "reminder_create": _handle_create,
+    "reminder_complete": _handle_complete,
+    "reminder_update": _handle_update,
+    "reminder_delete": _handle_delete,
+}
 
 
 # ------------------------------------------------------------
-# Section D — Public interface
+# Section H — Public interface
 # ------------------------------------------------------------
-
 
 async def list_tools() -> list[Tool]:
-    """Return the Tool definitions for the reminders domain.
-
-    Returns:
-        The module-level TOOLS list containing all reminder Tool
-        definitions.
-    """
+    """Return the Tool definitions for the reminders domain."""
     return TOOLS
 
 
 async def handle(name: str, arguments: dict) -> list[TextContent]:
-    """Dispatch a reminder tool call to the correct implementation.
+    """Dispatch a reminder tool call to its handler.
 
     Args:
         name:      The tool name, e.g. "reminder_create".
         arguments: Dict of validated arguments from the client.
 
     Returns:
-        A single-element list containing a TextContent with the
-        result as text or JSON.
+        A single-element list containing a TextContent with the result.
 
     Raises:
         ValueError:   If the tool name is not recognised.
         RuntimeError: If the underlying AppleScript call fails.
     """
-    if name == "reminder_list_lists":
-        raw = await _run_script("list_lists")
-        lists = []
-        for line in raw.splitlines():
-            parts = line.split("|", maxsplit=1)
-            if len(parts) == 2:
-                lists.append({"name": parts[0], "count": int(parts[1])})
-        return [TextContent(type="text", text=json.dumps(lists, indent=2))]
-
-    if name == "reminder_get":
-        list_name = arguments.get("list", "default")
-        count = int(arguments.get("count", 50))
-        offset = int(arguments.get("offset", 0))
-        include_completed = bool(arguments.get("include_completed", False))
-        raw = await _run_script(
-            "get_reminders",
-            list_name,
-            str(count),
-            str(offset),
-            str(include_completed).lower(),
-        )
-        lines = raw.splitlines() if raw else []
-        total = int(lines[0]) if lines else 0
-        reminders = [r for r in (_parse_reminder(line)
-                                 for line in lines[1:]) if r]
-        return [TextContent(type="text", text=json.dumps({
-            "total": total,
-            "offset": offset,
-            "returned": len(reminders),
-            "has_more": offset + len(reminders) < total,
-            "reminders": reminders
-        }, indent=2))]
-
-    if name == "reminder_search":
-        query = arguments["query"]
-        include_completed = bool(arguments.get("include_completed", False))
-        search_notes = bool(arguments.get("search_notes", False))
-        count = int(arguments.get("count", 50))
-        offset = int(arguments.get("offset", 0))
-
-        if search_notes:
-            # Opt-in full-text scan (matches notes too). This reads every
-            # reminder's body live and can be slow on large accounts; it is not
-            # served from the index because notes are not indexed.
-            raw = await _run_script(
-                "search", query, str(include_completed).lower(), "true",
-            )
-            matches = [r for r in (_parse_reminder(line)
-                                   for line in raw.splitlines()) if r]
-        elif _index_cache is None:
-            # Cold start: no index yet. Trigger a build and tell the caller to
-            # retry rather than blocking on a scan that could exceed the client
-            # timeout. Startup warm_index() usually makes this branch rare.
-            _kick_refresh()
-            return [TextContent(type="text", text=json.dumps({
-                "status": "warming",
-                "total": 0,
-                "offset": offset,
-                "returned": 0,
-                "has_more": False,
-                "reminders": [],
-                "message": "Reminder search index is building; retry in a few seconds.",
-            }, indent=2))]
-        else:
-            # Serve from the in-memory index immediately; refresh in the
-            # background if it has gone stale (never block the search on a scan).
-            if (time.monotonic() - _index_built_at) >= _INDEX_TTL:
-                _kick_refresh()
-            q = query.lower()
-            matches = []
-            for e in _index_cache:
-                if q not in e["title"].lower():
-                    continue
-                if not include_completed and e["is_completed"]:
-                    continue
-                matches.append({
-                    "id": e["id"],
-                    "title": e["title"],
-                    "due_date": e["due_date"],
-                    "notes": None,
-                    "is_completed": e["is_completed"],
-                    "list": e["list"],
-                })
-
-        # Paginate: a broad query can match hundreds of reminders, and an
-        # unbounded response overflows the client's payload limit.
-        total = len(matches)
-        page = matches[offset:offset + count] if count >= 0 else matches[offset:]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "ok",
-            "total": total,
-            "offset": offset,
-            "returned": len(page),
-            "has_more": offset + len(page) < total,
-            "reminders": page,
-        }, indent=2))]
-
-    if name == "reminder_create":
-        title = arguments["title"]
-        list_name = arguments.get("list", "default")
-        due_date = arguments.get("due_date", "")
-        notes = arguments.get("notes", "")
-        raw = await _run_script("create", title, list_name, due_date, notes)
-        # create returns "id|resolved_list_name"; use the resolved name so the
-        # index carries the real list (e.g. "Reminders") rather than "default".
-        reminder_id, _, resolved_list = raw.partition("|")
-        # Update the index in place so a create-then-search finds the new
-        # reminder immediately. Deliberately do NOT kick a full background
-        # rebuild here: that scan contends with the next mutation's write and
-        # can make it time out. External edits are reconciled by the periodic
-        # refresh a stale search triggers.
-        _index_add(reminder_id, title, resolved_list or list_name, due_date, False)
-        return [TextContent(type="text", text=reminder_id)]
-
-    if name == "reminder_complete":
-        reminder_id = arguments["reminder_id"]
-        await _run_script("complete", reminder_id)
-        _index_edit(reminder_id, is_completed=True)
-        return [TextContent(type="text", text=f"Completed {reminder_id!r}.")]
-
-    if name == "reminder_update":
-        reminder_id = arguments["reminder_id"]
-        title = arguments.get("title", "")
-        # Distinguish "omitted" (leave unchanged) from an explicit value via a
-        # sentinel, so a title-only update does not touch the due date.
-        due_date = arguments["due_date"] if "due_date" in arguments else "__KEEP__"
-        notes = arguments.get("notes", "")
-        list_name = arguments.get("list", "")
-        await _run_script("update", reminder_id, title, due_date, notes, list_name)
-        # Apply the known field changes to the index; a "__KEEP__"/"" due date
-        # means unchanged, so pass None for it in that case.
-        _index_edit(
-            reminder_id,
-            title=title or None,
-            list_name=list_name or None,
-            due_date=due_date if due_date not in ("__KEEP__", "") else None,
-        )
-        return [TextContent(type="text", text=f"Updated {reminder_id!r}.")]
-
-    if name == "reminder_delete":
-        reminder_id = arguments["reminder_id"]
-        await _run_script("delete", reminder_id)
-        _index_remove(reminder_id)
-        return [TextContent(type="text", text=f"Deleted {reminder_id!r}.")]
-
-    raise ValueError(f"Unknown reminder tool: '{name}'.")
+    try:
+        tool_handler = _TOOL_HANDLERS[name]
+    except KeyError:
+        raise ValueError(f"Unknown reminder tool: '{name}'.")
+    return await tool_handler(arguments)
