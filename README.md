@@ -1,6 +1,7 @@
 # macos-apps-mcp
 
 [![CI](https://github.com/derekrussell/macos-apps-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/derekrussell/macos-apps-mcp/actions/workflows/ci.yml)
+[![v0.3.0 milestone](https://img.shields.io/github/milestones/progress-percent/derekrussell/macos-apps-mcp/2?label=v0.3.0%20milestone)](https://github.com/derekrussell/macos-apps-mcp/milestone/2)
 
 A local [MCP](https://modelcontextprotocol.io) server that gives an MCP client
 (Claude Desktop, Cursor, Zed, VS Code, and others) read-and-organize access to
