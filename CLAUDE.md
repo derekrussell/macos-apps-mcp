@@ -10,26 +10,36 @@ platform-agnostic.
 ```
 server.py                  MCP entry point (stdio). Registers tools, dispatches by
                            name prefix, warms the reminder index at startup.
-tools/<domain>.py          Per-domain Python: Tool definitions + handlers. Each wraps
-                           osascript via _run_script() and parses pipe-delimited output.
+tools/<domain>.py          Per-domain Python: Tool definitions + one handler per tool
+                           behind a _TOOL_HANDLERS dispatch table, plus pure line
+                           parsers separated from the osascript call.
+tools/_osascript.py        Shared osascript boundary: run_osascript() (spawn + timeout
+                           kill/reap) and pure helpers (normalize_line_endings,
+                           clean_osascript_error, interpret_osascript_result).
+tools/_responses.py        Shared MCP-response helpers: json_content, text_content,
+                           paginate. Used by every domain module.
 scripts/<domain>.applescript   Per-domain AppleScript, dispatched on an action keyword
                            passed as the first argv item.
 scripts/utilities.applescript  Shared AppleScript handlers, loaded once per invocation:
                            sanitise_field, format_date, parse_iso_date.
+tests/                     pytest suite covering the pure Python logic in isolation
+                           (parsers, pagination, routing, the reminder index, and the
+                           handlers via a faked _run_script). Run: pytest.
 tools/filesystem.py        Stub (0 tools). The file_* namespace is reserved, unused.
 config.py                  (empty)
 ```
 
 - **Dispatch:** `server.py` routes by prefix — `mail_` → `tools/mail.py`, `notes_` →
   `tools/notes.py`, `reminder_` → `tools/reminders.py`, `file_` → stub.
-- **osascript boundary:** `_run_script(action, *args, timeout=60)` runs
-  `osascript scripts/<domain>.applescript <action> <args...>`. It normalises CR/CRLF
-  (so a stray CR can't shift pipe fields) and, on timeout, kills **and reaps** the
-  child (an osascript blocked in an Apple event ignores SIGKILL until the event
-  returns, so the wait is bounded). On a non-zero exit it raises the *unwrapped*
-  error via `clean_osascript_error` (`tools/_osascript.py`) — stripping the script
-  path, char offsets, and numeric code osascript prepends — with a raw-text
-  fallback.
+- **osascript boundary:** the one runner is `run_osascript(script_path, action, *args,
+  timeout=60)` in `tools/_osascript.py`; each domain module keeps a thin `_run_script`
+  wrapper that binds its own script path. The runner normalises CR/CRLF (so a stray CR
+  can't shift pipe fields) and, on timeout, kills **and reaps** the child (an osascript
+  blocked in an Apple event ignores SIGKILL until the event returns, so the wait is
+  bounded). On a non-zero exit it raises the *unwrapped* error via `clean_osascript_error`
+  — stripping the script path, char offsets, and numeric code osascript prepends — with a
+  raw-text fallback. The spawn/timeout/decode logic is split into small pure functions so
+  it is unit-testable without a subprocess.
 - **Shared handlers:** each script calls `load_utilities()` to load
   `utilities.applescript` by a path resolved relative to `path to me`, then calls e.g.
   `util's format_date(...)`. Inside a `tell application` block these need
@@ -125,10 +135,15 @@ EventKit** (see gotchas). Instead:
 - **Dependency:** `mcp>=1.27.1` (`requirements.txt`). Run: `python server.py` (stdio;
   normally launched by the MCP client, e.g. Claude Desktop).
 - **Python syntax check:** `python3 -m py_compile tools/*.py server.py`.
+- **Unit tests:** `pytest` (install dev deps with `pip install -r requirements-dev.txt`;
+  config in `pyproject.toml`). Covers the pure Python logic in isolation — parsers,
+  pagination, prefix routing, the reminder search index, and each tool handler with a
+  faked `_run_script` — so it runs fast and spawns no osascript. These do NOT exercise
+  real AppleScript/Apple apps.
 - **AppleScript parse check:** `osascript scripts/<domain>.applescript` with no args —
   a fast `Can't get item 1 of {}` (-1728) means it compiled (that's the argv access,
   after successful parse).
-- **No automated test suite.** Validation is the manual 23-tool sequence in
+- **End-to-end validation** (real Apple apps) is the manual 23-tool sequence in
   `SMOKE_TEST.md` (keep that file in sync when adding/removing a tool); run reports live
   under `~/Desktop/apple_mcp/`. When testing reminder/mail search, prefer a freshly
   restarted machine and avoid rapid repeated Reminders scans.
