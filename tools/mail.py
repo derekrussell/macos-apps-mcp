@@ -27,12 +27,12 @@ Note:
     shortcut for the unified inbox.
 """
 
-import json
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
 from ._osascript import DEFAULT_TIMEOUT_SECONDS, run_osascript
+from ._responses import json_content, text_content
 
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _MAIL_SCRIPT = _SCRIPTS_DIR / "mail.applescript"
@@ -329,21 +329,7 @@ async def _run_script(
 
 
 # ------------------------------------------------------------
-# Section D — MCP content helpers
-# ------------------------------------------------------------
-
-def _json_content(payload) -> list[TextContent]:
-    """Wrap a JSON-serialisable payload as a single MCP text content item."""
-    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
-
-
-def _text_content(text: str) -> list[TextContent]:
-    """Wrap a plain string as a single MCP text content item."""
-    return [TextContent(type="text", text=text)]
-
-
-# ------------------------------------------------------------
-# Section E — Output parsers (pure)
+# Section D — Output parsers (pure)
 # ------------------------------------------------------------
 
 def _parse_message(line: str) -> dict | None:
@@ -402,7 +388,7 @@ def _parse_mailbox_line(line: str) -> dict | None:
 
 
 # ------------------------------------------------------------
-# Section F — Per-tool handlers
+# Section E — Per-tool handlers
 # ------------------------------------------------------------
 
 async def _handle_get_messages(arguments: dict) -> list[TextContent]:
@@ -420,7 +406,7 @@ async def _handle_get_messages(arguments: dict) -> list[TextContent]:
     )
     total, messages = _parse_messages(raw)
     returned = len(messages)
-    return _json_content({
+    return json_content({
         "total": total,
         "offset": offset,
         "returned": returned,
@@ -455,7 +441,7 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
     )
     total, messages = _parse_messages(raw)
     returned = len(messages)
-    return _json_content({
+    return json_content({
         "status": "ok",
         "total": total,
         "offset": offset,
@@ -470,7 +456,7 @@ async def _handle_count_messages(arguments: dict) -> list[TextContent]:
     mailbox = arguments.get("mailbox", "inbox")
     raw = await _run_script("count_messages", str(unread_only).lower(), mailbox)
     # Round-trip through int to validate the script returned a number.
-    return _text_content(str(int(raw)))
+    return text_content(str(int(raw)))
 
 
 async def _handle_list_mailboxes(arguments: dict) -> list[TextContent]:
@@ -481,26 +467,26 @@ async def _handle_list_mailboxes(arguments: dict) -> list[TextContent]:
         (_parse_mailbox_line(line) for line in raw.splitlines())
         if parsed is not None
     ]
-    return _json_content(mailboxes)
+    return json_content(mailboxes)
 
 
 async def _handle_get_body(arguments: dict) -> list[TextContent]:
     message_id = arguments["message_id"]
     body = await _run_script("get_body", message_id)
-    return _text_content(body)
+    return text_content(body)
 
 
 async def _handle_move(arguments: dict) -> list[TextContent]:
     message_id = arguments["message_id"]
     mailbox = arguments["mailbox"]
     await _run_script("move", message_id, mailbox)
-    return _text_content(f"Moved {message_id!r} to '{mailbox}'.")
+    return text_content(f"Moved {message_id!r} to '{mailbox}'.")
 
 
 async def _handle_delete(arguments: dict) -> list[TextContent]:
     message_id = arguments["message_id"]
     await _run_script("delete", message_id)
-    return _text_content(f"Deleted {message_id!r}.")
+    return text_content(f"Deleted {message_id!r}.")
 
 
 async def _handle_rename_mailbox(arguments: dict) -> list[TextContent]:
@@ -511,7 +497,7 @@ async def _handle_rename_mailbox(arguments: dict) -> list[TextContent]:
             "new_name must be a plain mailbox name, not a path (no '/')."
         )
     new_path = await _run_script("rename_mailbox", mailbox, new_name)
-    return _text_content(f"Renamed '{mailbox}' to '{new_path}'.")
+    return text_content(f"Renamed '{mailbox}' to '{new_path}'.")
 
 
 async def _handle_create_mailbox(arguments: dict) -> list[TextContent]:
@@ -519,7 +505,7 @@ async def _handle_create_mailbox(arguments: dict) -> list[TextContent]:
     # The script returns "created|<path>" or "exists|<path>".
     raw = await _run_script("create_mailbox", mailbox)
     state, _, path = raw.partition("|")
-    return _json_content({
+    return json_content({
         "status": "ok",
         "path": path,
         "created": state == "created",
@@ -540,7 +526,7 @@ _TOOL_HANDLERS = {
 
 
 # ------------------------------------------------------------
-# Section G — Public interface
+# Section F — Public interface
 # ------------------------------------------------------------
 
 async def list_tools() -> list[Tool]:

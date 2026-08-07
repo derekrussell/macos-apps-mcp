@@ -26,12 +26,12 @@ Note:
     without needing to know its name.
 """
 
-import json
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
 from ._osascript import DEFAULT_TIMEOUT_SECONDS, run_osascript
+from ._responses import json_content, paginate, text_content
 
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _NOTES_SCRIPT = _SCRIPTS_DIR / "notes.applescript"
@@ -236,21 +236,7 @@ async def _run_script(
 
 
 # ------------------------------------------------------------
-# Section D — MCP content helpers
-# ------------------------------------------------------------
-
-def _json_content(payload) -> list[TextContent]:
-    """Wrap a JSON-serialisable payload as a single MCP text content item."""
-    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
-
-
-def _text_content(text: str) -> list[TextContent]:
-    """Wrap a plain string as a single MCP text content item."""
-    return [TextContent(type="text", text=text)]
-
-
-# ------------------------------------------------------------
-# Section E — Output parsers (pure)
+# Section D — Output parsers (pure)
 # ------------------------------------------------------------
 
 def _parse_folder_line(line: str) -> dict | None:
@@ -285,20 +271,8 @@ def _parse_note(line: str) -> dict | None:
     }
 
 
-def _paginate(items: list, offset: int, count: int):
-    """Slice ``items`` for offset/count pagination.
-
-    Returns a (page, total, has_more) tuple. A negative count returns everything
-    from ``offset`` onward.
-    """
-    total = len(items)
-    page = items[offset:offset + count] if count >= 0 else items[offset:]
-    has_more = offset + len(page) < total
-    return page, total, has_more
-
-
 # ------------------------------------------------------------
-# Section F — Per-tool handlers
+# Section E — Per-tool handlers
 # ------------------------------------------------------------
 
 async def _handle_list_folders(arguments: dict) -> list[TextContent]:
@@ -309,7 +283,7 @@ async def _handle_list_folders(arguments: dict) -> list[TextContent]:
         (_parse_folder_line(line) for line in raw.splitlines())
         if parsed is not None
     ]
-    return _json_content(folders)
+    return json_content(folders)
 
 
 async def _handle_get(arguments: dict) -> list[TextContent]:
@@ -328,7 +302,7 @@ async def _handle_get(arguments: dict) -> list[TextContent]:
         if parsed is not None
     ]
     returned = len(notes)
-    return _json_content({
+    return json_content({
         "total": total,
         "offset": offset,
         "returned": returned,
@@ -349,8 +323,8 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
         if parsed is not None
     ]
 
-    page, total, has_more = _paginate(matches, offset, count)
-    return _json_content({
+    page, total, has_more = paginate(matches, offset, count)
+    return json_content({
         "status": "ok",
         "total": total,
         "offset": offset,
@@ -365,13 +339,13 @@ async def _handle_create(arguments: dict) -> list[TextContent]:
     body = arguments.get("body", "")
     folder = arguments.get("folder", "default")
     note_id = await _run_script("create", title, body, folder)
-    return _text_content(note_id)
+    return text_content(note_id)
 
 
 async def _handle_delete(arguments: dict) -> list[TextContent]:
     note_id = arguments["note_id"]
     await _run_script("delete", note_id)
-    return _text_content(f"Deleted {note_id!r}.")
+    return text_content(f"Deleted {note_id!r}.")
 
 
 async def _handle_update(arguments: dict) -> list[TextContent]:
@@ -379,14 +353,14 @@ async def _handle_update(arguments: dict) -> list[TextContent]:
     title = arguments.get("title", "")
     body = arguments.get("body", "")
     await _run_script("update", note_id, title, body)
-    return _text_content(f"Updated {note_id!r}.")
+    return text_content(f"Updated {note_id!r}.")
 
 
 async def _handle_append(arguments: dict) -> list[TextContent]:
     note_id = arguments["note_id"]
     text = arguments["text"]
     await _run_script("append", note_id, text)
-    return _text_content(f"Appended to {note_id!r}.")
+    return text_content(f"Appended to {note_id!r}.")
 
 
 _TOOL_HANDLERS = {
@@ -401,7 +375,7 @@ _TOOL_HANDLERS = {
 
 
 # ------------------------------------------------------------
-# Section G — Public interface
+# Section F — Public interface
 # ------------------------------------------------------------
 
 async def list_tools() -> list[Tool]:

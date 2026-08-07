@@ -29,7 +29,6 @@ Note:
 """
 
 import asyncio
-import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,6 +36,7 @@ from pathlib import Path
 from mcp.types import TextContent, Tool
 
 from ._osascript import DEFAULT_TIMEOUT_SECONDS, run_osascript
+from ._responses import json_content, paginate, text_content
 
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _REMINDERS_SCRIPT = _SCRIPTS_DIR / "reminders.applescript"
@@ -287,21 +287,7 @@ async def _run_script(
 
 
 # ------------------------------------------------------------
-# Section D — MCP content helpers
-# ------------------------------------------------------------
-
-def _json_content(payload) -> list[TextContent]:
-    """Wrap a JSON-serialisable payload as a single MCP text content item."""
-    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
-
-
-def _text_content(text: str) -> list[TextContent]:
-    """Wrap a plain string as a single MCP text content item."""
-    return [TextContent(type="text", text=text)]
-
-
-# ------------------------------------------------------------
-# Section E — Output parsers (pure)
+# Section D — Output parsers (pure)
 # ------------------------------------------------------------
 
 def _parse_list_line(line: str) -> dict | None:
@@ -338,20 +324,8 @@ def _parse_reminder(line: str) -> dict | None:
     }
 
 
-def _paginate(items: list, offset: int, count: int):
-    """Slice ``items`` for offset/count pagination.
-
-    Returns a (page, total, has_more) tuple. A negative count returns everything
-    from ``offset`` onward.
-    """
-    total = len(items)
-    page = items[offset:offset + count] if count >= 0 else items[offset:]
-    has_more = offset + len(page) < total
-    return page, total, has_more
-
-
 # ------------------------------------------------------------
-# Section F — Background search index
+# Section E — Background search index
 #
 # reminder_search must never block on an AppleScript scan: on a large account a
 # full scan takes tens of seconds and exceeds the MCP client timeout, and
@@ -566,7 +540,7 @@ def warm_index() -> None:
 
 
 # ------------------------------------------------------------
-# Section G — Per-tool handlers
+# Section F — Per-tool handlers
 # ------------------------------------------------------------
 
 async def _handle_list_lists(arguments: dict) -> list[TextContent]:
@@ -577,7 +551,7 @@ async def _handle_list_lists(arguments: dict) -> list[TextContent]:
         (_parse_list_line(line) for line in raw.splitlines())
         if parsed is not None
     ]
-    return _json_content(lists)
+    return json_content(lists)
 
 
 async def _handle_get(arguments: dict) -> list[TextContent]:
@@ -603,7 +577,7 @@ async def _handle_get(arguments: dict) -> list[TextContent]:
         if parsed is not None
     ]
     returned = len(reminders)
-    return _json_content({
+    return json_content({
         "total": total,
         "offset": offset,
         "returned": returned,
@@ -657,7 +631,7 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
         # blocking on a scan that could exceed the client timeout. Startup
         # warm_index() usually makes this branch rare.
         _kick_refresh()
-        return _json_content(_warming_search_response(offset))
+        return json_content(_warming_search_response(offset))
     else:
         # Serve instantly from the index; refresh in the background if stale so
         # the search itself never waits on a scan.
@@ -665,8 +639,8 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
             _kick_refresh()
         matches = _search_index.search(query, include_completed)
 
-    page, total, has_more = _paginate(matches, offset, count)
-    return _json_content({
+    page, total, has_more = paginate(matches, offset, count)
+    return json_content({
         "status": "ok",
         "total": total,
         "offset": offset,
@@ -697,14 +671,14 @@ async def _handle_create(arguments: dict) -> list[TextContent]:
         due_date=due_date,
         is_completed=False,
     )
-    return _text_content(reminder_id)
+    return text_content(reminder_id)
 
 
 async def _handle_complete(arguments: dict) -> list[TextContent]:
     reminder_id = arguments["reminder_id"]
     await _run_script("complete", reminder_id)
     _search_index.edit(reminder_id, is_completed=True)
-    return _text_content(f"Completed {reminder_id!r}.")
+    return text_content(f"Completed {reminder_id!r}.")
 
 
 async def _handle_update(arguments: dict) -> list[TextContent]:
@@ -727,14 +701,14 @@ async def _handle_update(arguments: dict) -> list[TextContent]:
         list_name=list_name or None,
         due_date=due_date if due_date_changed else None,
     )
-    return _text_content(f"Updated {reminder_id!r}.")
+    return text_content(f"Updated {reminder_id!r}.")
 
 
 async def _handle_delete(arguments: dict) -> list[TextContent]:
     reminder_id = arguments["reminder_id"]
     await _run_script("delete", reminder_id)
     _search_index.remove(reminder_id)
-    return _text_content(f"Deleted {reminder_id!r}.")
+    return text_content(f"Deleted {reminder_id!r}.")
 
 
 _TOOL_HANDLERS = {
@@ -749,7 +723,7 @@ _TOOL_HANDLERS = {
 
 
 # ------------------------------------------------------------
-# Section H — Public interface
+# Section G — Public interface
 # ------------------------------------------------------------
 
 async def list_tools() -> list[Tool]:

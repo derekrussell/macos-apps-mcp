@@ -44,29 +44,6 @@ def test_parse_note_wrong_field_count_returns_none():
 
 
 # ---------------------------------------------------------------------------
-# _paginate
-# ---------------------------------------------------------------------------
-
-def test_paginate_first_page_has_more():
-    page, total, has_more = notes._paginate(list(range(10)), offset=0, count=3)
-    assert page == [0, 1, 2]
-    assert total == 10
-    assert has_more is True
-
-
-def test_paginate_last_page_no_more():
-    page, total, has_more = notes._paginate(list(range(5)), offset=3, count=3)
-    assert page == [3, 4]
-    assert has_more is False
-
-
-def test_paginate_negative_count_returns_rest():
-    page, _total, has_more = notes._paginate(list(range(5)), offset=1, count=-1)
-    assert page == [1, 2, 3, 4]
-    assert has_more is False
-
-
-# ---------------------------------------------------------------------------
 # handle() dispatch and async handlers (faked _run_script)
 # ---------------------------------------------------------------------------
 

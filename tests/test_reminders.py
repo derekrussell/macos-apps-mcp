@@ -1,8 +1,9 @@
 """Unit tests for tools/reminders.py.
 
-Covers the pure parsers and pagination helper, the ReminderSearchIndex class in
-isolation (no globals, no asyncio), and the async tool handlers with a faked
-_run_script so no real osascript process is spawned.
+Covers the pure parsers, the ReminderSearchIndex class in isolation (no globals,
+no asyncio), and the async tool handlers with a faked _run_script so no real
+osascript process is spawned. Pagination lives in tools/_responses.py and is
+tested in test_responses.py.
 """
 
 import asyncio
@@ -66,37 +67,6 @@ def test_parse_index_line_valid():
 
 def test_parse_index_line_wrong_field_count_returns_none():
     assert reminders._parse_index_line("id|title|list|due") is None  # only 4 fields
-
-
-# ---------------------------------------------------------------------------
-# _paginate
-# ---------------------------------------------------------------------------
-
-def test_paginate_first_page_has_more():
-    page, total, has_more = reminders._paginate(list(range(10)), offset=0, count=3)
-    assert page == [0, 1, 2]
-    assert total == 10
-    assert has_more is True
-
-
-def test_paginate_last_page_no_more():
-    page, total, has_more = reminders._paginate(list(range(5)), offset=3, count=3)
-    assert page == [3, 4]
-    assert total == 5
-    assert has_more is False
-
-
-def test_paginate_negative_count_returns_rest():
-    page, total, has_more = reminders._paginate(list(range(5)), offset=1, count=-1)
-    assert page == [1, 2, 3, 4]
-    assert has_more is False
-
-
-def test_paginate_offset_past_end():
-    page, total, has_more = reminders._paginate([1, 2], offset=5, count=3)
-    assert page == []
-    assert total == 2
-    assert has_more is False
 
 
 # ---------------------------------------------------------------------------
