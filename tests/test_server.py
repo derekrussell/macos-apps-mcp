@@ -12,7 +12,7 @@ import asyncio
 import pytest
 
 import server
-from tools import filesystem, mail, notes, reminders
+from tools import mail, notes, reminders
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +26,6 @@ from tools import filesystem, mail, notes, reminders
         ("mail_create_mailbox", mail),
         ("notes_get", notes),
         ("reminder_search", reminders),
-        ("file_save", filesystem),
     ],
 )
 def test_select_tool_module_routes_by_prefix(tool_name, expected_module):
