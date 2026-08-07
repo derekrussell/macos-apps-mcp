@@ -1,0 +1,141 @@
+# macos-apps-mcp
+
+A local [MCP](https://modelcontextprotocol.io) server that gives an MCP client
+(Claude Desktop, Cursor, Zed, VS Code, and others) read-and-organize access to
+Apple's built-in productivity apps on **macOS**: **Mail**, **Reminders**, and
+**Notes**.
+
+Every operation is performed on your own machine by scripting the apps through
+**AppleScript** (`osascript`). Nothing is sent to a third party, and the server
+only reaches the apps you already have open on your Mac.
+
+> **Not affiliated with or endorsed by Apple.** "Apple," "Mail," "Reminders,"
+> and "Notes" are trademarks of Apple Inc. This is an independent project.
+
+## Status
+
+Early and actively developed — versioned **`0.x`** (see
+[Releases](../../releases)). The set of apps and the tool arguments may still
+change between minor versions. Not yet feature-complete; see
+[Scope](#scope) and the [issue tracker](../../issues) for what's planned.
+
+## Scope
+
+**In scope:** local, user-authorized access to Apple's built-in
+personal-information apps on macOS, performed **exclusively through
+AppleScript / `osascript`**.
+
+- **Today:** Mail, Reminders, Notes.
+- **Planned:** Calendar, Contacts, Messages (tracked as issues).
+
+**Out of scope:** non-Apple apps, creative apps (Photos editing, Music),
+system administration, and anything that can't be driven through AppleScript.
+AppleScript is both the design choice and the hard boundary — it's why some
+operations are possible and others simply aren't (see
+[Known limitations](#known-limitations)).
+
+## Tools (23)
+
+| Domain | Tools |
+| --- | --- |
+| **Mail** (9) | `mail_get_messages` · `mail_search` · `mail_count_messages` · `mail_list_mailboxes` · `mail_get_body` · `mail_move` · `mail_delete` · `mail_rename_mailbox` · `mail_create_mailbox` |
+| **Reminders** (7) | `reminder_list_lists` · `reminder_get` · `reminder_search` · `reminder_create` · `reminder_complete` · `reminder_update` · `reminder_delete` |
+| **Notes** (7) | `notes_list_folders` · `notes_get` · `notes_search` · `notes_create` · `notes_delete` · `notes_update` · `notes_append` |
+
+All three `*_search` tools share one response envelope
+(`{status, total, offset, returned, has_more, <items>}`) with `count`/`offset`
+pagination. Dates are ISO 8601 (`YYYY-MM-DD` or `YYYY-MM-DDTHH:MM:SS`) on the
+way in and out.
+
+## Requirements
+
+- **macOS** (the tools script native Apple apps; the server won't do anything
+  useful on other platforms).
+- **Python 3.10+**.
+- The Apple apps you want to use (Mail / Reminders / Notes) set up and signed in.
+
+## Install
+
+```sh
+git clone https://github.com/derekrussell/macos-apps-mcp.git
+cd macos-apps-mcp
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Run it standalone (stdio) to confirm it starts:
+
+```sh
+python server.py
+```
+
+Normally you don't run it by hand — your MCP client launches it (see below).
+
+## Connect an MCP client
+
+The server speaks MCP over **stdio**. Point your client at `server.py` with the
+Python from your virtualenv. For **Claude Desktop**, add this to
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "macos-apps": {
+      "command": "/absolute/path/to/macos-apps-mcp/.venv/bin/python",
+      "args": ["/absolute/path/to/macos-apps-mcp/server.py"]
+    }
+  }
+}
+```
+
+Use absolute paths for both the interpreter and the script. Restart the client
+after editing the config.
+
+## Permissions
+
+The first time a tool scripts an app, macOS prompts to allow the controlling
+process (your MCP client / terminal) to control Mail, Reminders, or Notes.
+**Approve each prompt**, or the calls fail. You can review and change these
+later under **System Settings → Privacy & Security → Automation**. Reminders
+also relies on EventKit access under the hood.
+
+## Known limitations
+
+These come from AppleScript / the apps themselves, not from this server:
+
+- **Mailboxes can't be deleted or moved via AppleScript** — the app returns a
+  generic error for every account type. There is deliberately no
+  `mail_delete_mailbox`; delete a mailbox manually in Mail.app. Renaming and
+  creating mailboxes *do* work, so `mail_rename_mailbox` can be used to flag a
+  mailbox (e.g. prefix `"DELETE ME - "`) for manual removal.
+- **A reminder's due date can't be cleared** once set (AppleScript limitation);
+  it can only be changed to another date.
+- **Notes has no separate title field** — a note's title is the first line of
+  its body, which the create/update tools compose for you.
+- **`reminder_search` is served from a background-built index**, not a live
+  scan: repeated full scans of a large Reminders store wedge EventKit. Title
+  search is instant; full-text (`notes`) search is an opt-in live scan that can
+  be slow. A cold start briefly returns `status: "warming"` — retry shortly.
+
+## Development
+
+```sh
+pip install -r requirements-dev.txt   # test deps
+pytest                                 # fast unit tests, no osascript spawned
+python3 -m py_compile tools/*.py server.py   # syntax check
+```
+
+The unit tests cover the pure Python logic in isolation — parsers, pagination,
+prefix routing, the reminder index, and each tool handler against a faked
+script runner — so they run fast and never touch real Apple apps. End-to-end
+validation against the live apps is the manual sequence in
+[`SMOKE_TEST.md`](SMOKE_TEST.md). Architecture notes live in
+[`CLAUDE.md`](CLAUDE.md).
+
+Bug reports and feature requests (including new apps) are welcome in the
+[issue tracker](../../issues).
+
+## License
+
+See [`LICENSE`](LICENSE).

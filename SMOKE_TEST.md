@@ -1,4 +1,4 @@
-# apple-mcp smoke test
+# macos-apps-mcp smoke test
 
 Canonical, versioned manual test plan for all **23 tools** (Reminders 7 · Notes 7 ·
 Mail 9). Run it through the MCP client (e.g. Claude Desktop) after any change to the
@@ -6,7 +6,7 @@ tools or their AppleScript. Keep this file in sync with the tool surface — whe
 is added or removed, update the steps and the count here in the same change, so the plan
 never drifts (that drift is why earlier runs needed ad-hoc `step 21'` patches).
 
-Record the report as `apple-mcp-smoke-test-run<N>-<YYYY-MM-DD>.md`. The archive so far
+Record the report as `macos-apps-mcp-smoke-test-run<N>-<YYYY-MM-DD>.md`. The archive so far
 lives in `~/Desktop/apple_mcp/`; if the client running the tests can't write there (that
 folder isn't connected to its session), save it somewhere it can and move it afterward.
 
@@ -109,7 +109,7 @@ that is just the scratch reminder.
 ## Results template
 
 ```
-# apple-mcp smoke test — run <N>
+# macos-apps-mcp smoke test — run <N>
 Tested: <YYYY-MM-DD>, tag MCP-SMOKE-<YYYY-MM-DD>-R<N>
 Result: <P> PASS / <F> FAIL
 

@@ -1,4 +1,4 @@
-"""MCP server entry point for the Apple Assistant.
+"""MCP server entry point for macos-apps-mcp.
 
 This module starts a Model Context Protocol (MCP) server over stdio, registers
 every available tool, and routes each incoming tool call to the correct handler
@@ -33,7 +33,7 @@ MODULE_BY_TOOL_PREFIX = {
     "reminder_": reminders,
 }
 
-app = Server("apple-assistant")
+app = Server("macos-apps")
 
 
 # ------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Tool handler modules for the Apple Assistant MCP server.
+"""Tool handler modules for the macos-apps-mcp server.
 
 Each module in this package is responsible for one domain:
 

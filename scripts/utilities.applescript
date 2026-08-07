@@ -1,5 +1,5 @@
 -- utilities.applescript
--- Shared handlers for the apple-mcp AppleScript files (mail, reminders, notes).
+-- Shared handlers for the macos-apps-mcp AppleScript files (mail, reminders, notes).
 --
 -- These handlers were previously duplicated in every script. AppleScript has
 -- no include mechanism for source files run via osascript, so each main script

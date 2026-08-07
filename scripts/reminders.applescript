@@ -1,5 +1,5 @@
 -- reminders.applescript
--- Handles all Apple Reminders actions for the apple-mcp server.
+-- Handles all Apple Reminders actions for the macos-apps-mcp server.
 --
 -- Called by tools/reminders.py via:
 --   osascript reminders.applescript <action> [args...]
