@@ -10,14 +10,15 @@
 --                                                  -> total\nmsg_id|subject|sender|date|is_read\n...
 --   search          <mailbox> <sender> <subject> <body> <since> <until> <unread_only> <count> <offset>
 --                                                  -> total\nmsg_id|subject|sender|date|is_read\n...
---   list_mailboxes                                 -> name|count\n...
+--   list_mailboxes                                 -> path|count\n...
 --   get_body        <message_id>                   -> plain-text body
 --   move            <message_id> <mailbox>         -> (no output)
 --   delete          <message_id>                   -> (no output)
 --   rename_mailbox  <mailbox> <new_name>           -> new account-qualified path
 --   create_mailbox  <mailbox>                       -> "created|path" or "exists|path"
 
--- Shared handlers (sanitise_field, format_date), loaded once per invocation.
+-- Shared handlers (sanitise_field, format_date, parse_iso_date), loaded once
+-- per invocation.
 property util : missing value
 
 on run argv
@@ -36,15 +37,15 @@ on run argv
         return get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
     else if action is "search" then
         set mailboxName to item 2 of argv
-        set senderQ to item 3 of argv
-        set subjectQ to item 4 of argv
-        set bodyQ to item 5 of argv
-        set sinceStr to item 6 of argv
-        set untilStr to item 7 of argv
+        set senderQuery to item 3 of argv
+        set subjectQuery to item 4 of argv
+        set bodyQuery to item 5 of argv
+        set sinceText to item 6 of argv
+        set untilText to item 7 of argv
         set unreadOnly to item 8 of argv
         set batchCount to (item 9 of argv) as integer
         set batchOffset to (item 10 of argv) as integer
-        return search_messages(mailboxName, senderQ, subjectQ, bodyQ, sinceStr, untilStr, unreadOnly, batchCount, batchOffset)
+        return search_messages(mailboxName, senderQuery, subjectQuery, bodyQuery, sinceText, untilText, unreadOnly, batchCount, batchOffset)
     else if action is "list_mailboxes" then
         return list_mailboxes()
     else if action is "get_body" then
@@ -63,54 +64,64 @@ on run argv
 end run
 
 
--- Utilities
+-- Helpers
 -- ------------------------------------------------------------
 
--- Load the shared handler library (sanitise_field, format_date) that sits
--- alongside this script. Resolved relative to this file's own path so it
--- works regardless of the caller's working directory.
+-- Load the shared handler library (sanitise_field, format_date, parse_iso_date)
+-- that sits alongside this script. Resolved relative to this file's own path so
+-- it works regardless of the caller's working directory.
 on load_utilities()
-    set myPosix to POSIX path of (path to me)
+    set myPosixPath to POSIX path of (path to me)
     set AppleScript's text item delimiters to "/"
-    set dirParts to items 1 thru -2 of (text items of myPosix)
-    set utilPath to (dirParts as text) & "/utilities.applescript"
+    set directoryParts to items 1 thru -2 of (text items of myPosixPath)
+    set utilitiesPath to (directoryParts as text) & "/utilities.applescript"
     set AppleScript's text item delimiters to ""
-    return (run script (read POSIX file utilPath as «class utf8»))
+    return (run script (read POSIX file utilitiesPath as «class utf8»))
 end load_utilities
+
+
+-- Return "true"/"false" for an AppleScript boolean (the wire format's booleans).
+on boolean_to_text(flag)
+    if flag then
+        return "true"
+    else
+        return "false"
+    end if
+end boolean_to_text
 
 
 -- Build a unique, account-qualified path for a mailbox by walking up its
 -- container chain to the account, e.g. "iCloud/Church/Transactions".
--- A parent mailbox reports class "container"; the account does not, which
--- is how we know when to stop climbing. Necessary because several mailboxes
--- share a leaf name (e.g. three separate "Transactions" boxes).
-on mailbox_path(mbx)
+-- A parent mailbox reports class "container"; the account does not, which is how
+-- we know when to stop climbing. Necessary because several mailboxes share a
+-- leaf name (e.g. three separate "Transactions" boxes).
+on mailbox_path(mailboxReference)
     tell application "Mail"
-        set pathStr to name of mbx
-        set c to container of mbx
-        repeat while (class of c) is container
-            set pathStr to (name of c) & "/" & pathStr
-            set c to container of c
+        set pathText to name of mailboxReference
+        set parentContainer to container of mailboxReference
+        repeat while (class of parentContainer) is container
+            set pathText to (name of parentContainer) & "/" & pathText
+            set parentContainer to container of parentContainer
         end repeat
-        return (name of c) & "/" & pathStr
+        return (name of parentContainer) & "/" & pathText
     end tell
 end mailbox_path
 
 
--- Resolve a mailbox from its account-qualified path (as produced by
--- mailbox_path and returned by list_mailboxes). "inbox" is accepted as a
--- shortcut for the unified inbox. "mailboxes of acct" already returns every
--- mailbox flat, including nested ones, so no recursion is needed.
+-- Resolve a mailbox from its account-qualified path (as produced by mailbox_path
+-- and returned by list_mailboxes). "inbox" is accepted as a shortcut for the
+-- unified inbox. "mailboxes of acct" already returns every mailbox flat,
+-- including nested ones, so no recursion is needed.
 on resolve_mailbox(mailboxName)
     tell application "Mail"
         if mailboxName is "inbox" then return inbox
-        repeat with acct in every account
-            repeat with mbx in (mailboxes of acct)
-                -- Return "contents of" the loop variable, not the loop
-                -- variable itself: the latter is a positional reference
-                -- (item N of mailboxes of ...) that becomes stale or resolves
-                -- to the wrong mailbox once used in a later tell block.
-                if (my mailbox_path(mbx)) is mailboxName then return (contents of mbx)
+        repeat with currentAccount in every account
+            repeat with currentMailbox in (mailboxes of currentAccount)
+                -- Return "contents of" the loop variable, not the loop variable
+                -- itself: the latter is a positional reference (item N of
+                -- mailboxes of ...) that becomes stale or resolves to the wrong
+                -- mailbox once used in a later tell block.
+                if (my mailbox_path(currentMailbox)) is mailboxName then return (contents of currentMailbox)
             end repeat
         end repeat
         error "Mailbox not found: " & mailboxName
@@ -121,16 +132,36 @@ end resolve_mailbox
 -- Find a message by its RFC 2822 Message-ID across every mailbox.
 on find_message(messageId)
     tell application "Mail"
-        repeat with acct in every account
-            repeat with mbx in (mailboxes of acct)
+        repeat with currentAccount in every account
+            repeat with currentMailbox in (mailboxes of currentAccount)
                 try
-                    return (first message of mbx whose message id is messageId)
+                    return (first message of currentMailbox whose message id is messageId)
                 end try
             end repeat
         end repeat
         error "Message not found: " & messageId
     end tell
 end find_message
+
+
+-- Format a list of messages into pipe-delimited lines, reading each message's
+-- fields per-message (Mail cannot bulk-read fields off a unified-inbox
+-- whose-result). Output line: message_id|subject|sender|date|is_read
+-- Shared by get_messages and search_messages.
+on format_message_lines(messageList)
+    set output to ""
+    tell application "Mail"
+        repeat with currentMessage in messageList
+            set messageId to message id of currentMessage
+            set messageSubject to subject of currentMessage
+            set messageSender to sender of currentMessage
+            set messageDateText to my (util's format_date(date sent of currentMessage))
+            set isReadText to my boolean_to_text(read status of currentMessage)
+            set output to output & messageId & "|" & (my (util's sanitise_field(messageSubject))) & "|" & (my (util's sanitise_field(messageSender))) & "|" & messageDateText & "|" & isReadText & linefeed
+        end repeat
+    end tell
+    return output
+end format_message_lines
 
 
 -- Public handlers
@@ -164,32 +195,17 @@ on get_messages(batchCount, batchOffset, unreadOnly, mailboxName)
 
         set totalCount to count of allMessages
         set output to (totalCount as text) & linefeed
-
         if totalCount is 0 then return output
 
         -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
-        set startIdx to batchOffset + 1
-        if startIdx > totalCount then return output
+        set startIndex to batchOffset + 1
+        if startIndex > totalCount then return output
 
-        set endIdx to batchOffset + batchCount
-        if endIdx > totalCount then set endIdx to totalCount
+        set endIndex to batchOffset + batchCount
+        if endIndex > totalCount then set endIndex to totalCount
 
-        set batchMessages to items startIdx thru endIdx of allMessages
-
-        repeat with msg in batchMessages
-            set msgId to message id of msg
-            set msgSubject to subject of msg
-            set msgSender to sender of msg
-            set msgDate to my (util's format_date(date sent of msg))
-            if read status of msg is true then
-                set msgRead to "true"
-            else
-                set msgRead to "false"
-            end if
-            set output to output & msgId & "|" & (my (util's sanitise_field(msgSubject))) & "|" & (my (util's sanitise_field(msgSender))) & "|" & msgDate & "|" & msgRead & linefeed
-        end repeat
-
-        return output
+        set batchMessages to items startIndex thru endIndex of allMessages
+        return output & (my format_message_lines(batchMessages))
     end tell
 end get_messages
 
@@ -210,110 +226,96 @@ end get_messages
 -- Body match is applied LOCALLY to the narrowed set: `content contains` inside a
 -- `whose` would force Mail to decode every body in the mailbox, whereas reading
 -- bodies only for the already-narrowed candidates is far cheaper.
-on search_messages(mailboxName, senderQ, subjectQ, bodyQ, sinceStr, untilStr, unreadOnly, batchCount, batchOffset)
+on search_messages(mailboxName, senderQuery, subjectQuery, bodyQuery, sinceText, untilText, unreadOnly, batchCount, batchOffset)
     set targetMailbox to resolve_mailbox(mailboxName)
 
     -- Build the date bounds component-wise (ISO string coercion mangles dates).
     -- Missing bounds use sentinels; an inclusive `until` spans the whole day.
-    if sinceStr is "" then
+    if sinceText is "" then
         set sinceDate to util's parse_iso_date("1970-01-01")
     else
-        set sinceDate to util's parse_iso_date(sinceStr)
+        set sinceDate to util's parse_iso_date(sinceText)
     end if
-    if untilStr is "" then
+    if untilText is "" then
         set untilDate to util's parse_iso_date("2999-12-31")
     else
-        set untilDate to (util's parse_iso_date(untilStr)) + 1 * days - 1
+        set untilDate to (util's parse_iso_date(untilText)) + 1 * days - 1
     end if
 
-    set hasSender to (senderQ is not "")
-    set hasSubject to (subjectQ is not "")
-    set unread to (unreadOnly is "true")
+    set hasSenderQuery to (senderQuery is not "")
+    set hasSubjectQuery to (subjectQuery is not "")
+    set unreadOnlyFlag to (unreadOnly is "true")
 
     tell application "Mail"
-        -- Enumerate clause shapes: a predicate for sender/subject is present
-        -- only when its criterion is non-empty (see note above).
-        if hasSender and hasSubject then
-            if unread then
-                set matched to (messages of targetMailbox whose sender contains senderQ and subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+        -- Enumerate clause shapes: a predicate for sender/subject is present only
+        -- when its criterion is non-empty (see note above).
+        if hasSenderQuery and hasSubjectQuery then
+            if unreadOnlyFlag then
+                set matchedMessages to (messages of targetMailbox whose sender contains senderQuery and subject contains subjectQuery and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
             else
-                set matched to (messages of targetMailbox whose sender contains senderQ and subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate)
+                set matchedMessages to (messages of targetMailbox whose sender contains senderQuery and subject contains subjectQuery and date sent ≥ sinceDate and date sent ≤ untilDate)
             end if
-        else if hasSender then
-            if unread then
-                set matched to (messages of targetMailbox whose sender contains senderQ and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+        else if hasSenderQuery then
+            if unreadOnlyFlag then
+                set matchedMessages to (messages of targetMailbox whose sender contains senderQuery and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
             else
-                set matched to (messages of targetMailbox whose sender contains senderQ and date sent ≥ sinceDate and date sent ≤ untilDate)
+                set matchedMessages to (messages of targetMailbox whose sender contains senderQuery and date sent ≥ sinceDate and date sent ≤ untilDate)
             end if
-        else if hasSubject then
-            if unread then
-                set matched to (messages of targetMailbox whose subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+        else if hasSubjectQuery then
+            if unreadOnlyFlag then
+                set matchedMessages to (messages of targetMailbox whose subject contains subjectQuery and date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
             else
-                set matched to (messages of targetMailbox whose subject contains subjectQ and date sent ≥ sinceDate and date sent ≤ untilDate)
+                set matchedMessages to (messages of targetMailbox whose subject contains subjectQuery and date sent ≥ sinceDate and date sent ≤ untilDate)
             end if
         else
-            if unread then
-                set matched to (messages of targetMailbox whose date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
+            if unreadOnlyFlag then
+                set matchedMessages to (messages of targetMailbox whose date sent ≥ sinceDate and date sent ≤ untilDate and read status is false)
             else
-                set matched to (messages of targetMailbox whose date sent ≥ sinceDate and date sent ≤ untilDate)
+                set matchedMessages to (messages of targetMailbox whose date sent ≥ sinceDate and date sent ≤ untilDate)
             end if
         end if
 
         -- Body match: filter the narrowed candidates locally, reading content
         -- only for them. Messages whose body cannot be read are skipped.
-        if bodyQ is not "" then
-            set filtered to {}
-            repeat with msg in matched
+        if bodyQuery is not "" then
+            set bodyMatchedMessages to {}
+            repeat with currentMessage in matchedMessages
                 try
                     ignoring case
-                        if (content of msg) contains bodyQ then set end of filtered to (contents of msg)
+                        if (content of currentMessage) contains bodyQuery then set end of bodyMatchedMessages to (contents of currentMessage)
                     end ignoring
                 end try
             end repeat
         else
-            set filtered to matched
+            set bodyMatchedMessages to matchedMessages
         end if
 
-        set totalCount to count of filtered
+        set totalCount to count of bodyMatchedMessages
         set output to (totalCount as text) & linefeed
         if totalCount is 0 then return output
 
         -- AppleScript lists are 1-indexed; batchOffset is 0-based from Python.
-        set startIdx to batchOffset + 1
-        if startIdx > totalCount then return output
-        set endIdx to batchOffset + batchCount
-        if endIdx > totalCount then set endIdx to totalCount
+        set startIndex to batchOffset + 1
+        if startIndex > totalCount then return output
+        set endIndex to batchOffset + batchCount
+        if endIndex > totalCount then set endIndex to totalCount
 
-        set batchMessages to items startIdx thru endIdx of filtered
-
-        repeat with msg in batchMessages
-            set msgId to message id of msg
-            set msgSubject to subject of msg
-            set msgSender to sender of msg
-            set msgDate to my (util's format_date(date sent of msg))
-            if read status of msg is true then
-                set msgRead to "true"
-            else
-                set msgRead to "false"
-            end if
-            set output to output & msgId & "|" & (my (util's sanitise_field(msgSubject))) & "|" & (my (util's sanitise_field(msgSender))) & "|" & msgDate & "|" & msgRead & linefeed
-        end repeat
-
-        return output
+        set batchMessages to items startIndex thru endIndex of bodyMatchedMessages
+        return output & (my format_message_lines(batchMessages))
     end tell
 end search_messages
 
 
 -- Return all mailboxes across all accounts with their message counts.
 -- Output is pipe-delimited: path|count, where path is account-qualified
--- (e.g. "iCloud/Church/Transactions"). "mailboxes of acct" already returns
--- every mailbox flat, so each appears exactly once with no recursion.
+-- (e.g. "iCloud/Church/Transactions"). "mailboxes of acct" already returns every
+-- mailbox flat, so each appears exactly once with no recursion.
 on list_mailboxes()
     tell application "Mail"
         set output to ""
-        repeat with acct in every account
-            repeat with mbx in (mailboxes of acct)
-                set output to output & (my mailbox_path(mbx)) & "|" & ((count of messages of mbx) as text) & linefeed
+        repeat with currentAccount in every account
+            repeat with currentMailbox in (mailboxes of currentAccount)
+                set output to output & (my mailbox_path(currentMailbox)) & "|" & ((count of messages of currentMailbox) as text) & linefeed
             end repeat
         end repeat
         return output
@@ -323,28 +325,28 @@ end list_mailboxes
 
 -- Return the plain-text body of the message with the given RFC 2822 Message-ID.
 on get_body(messageId)
-    set targetMsg to find_message(messageId)
+    set targetMessage to find_message(messageId)
     tell application "Mail"
-        return content of targetMsg
+        return content of targetMessage
     end tell
 end get_body
 
 
 -- Move the message with the given Message-ID to the named mailbox.
 on move_message(messageId, mailboxName)
-    set targetMsg to find_message(messageId)
+    set targetMessage to find_message(messageId)
     set targetMailbox to resolve_mailbox(mailboxName)
     tell application "Mail"
-        move targetMsg to targetMailbox
+        move targetMessage to targetMailbox
     end tell
 end move_message
 
 
 -- Move the message with the given Message-ID to the Trash.
 on delete_message(messageId)
-    set targetMsg to find_message(messageId)
+    set targetMessage to find_message(messageId)
     tell application "Mail"
-        delete targetMsg
+        delete targetMessage
     end tell
 end delete_message
 
@@ -366,9 +368,9 @@ on rename_mailbox(mailboxName, newName)
     -- don't re-read it. A rename keeps the mailbox in the same parent, so the new
     -- path is the input path's parent + the new leaf.
     set AppleScript's text item delimiters to "/"
-    set parts to text items of mailboxName
-    if (count of parts) > 1 then
-        set parentPath to (items 1 thru -2 of parts) as text
+    set pathParts to text items of mailboxName
+    if (count of pathParts) > 1 then
+        set parentPath to (items 1 thru -2 of pathParts) as text
         set newPath to parentPath & "/" & newName
     else
         set newPath to newName
@@ -396,49 +398,50 @@ end rename_mailbox
 on create_mailbox(mailboxName)
     -- Split the account (first segment) from the within-account segments.
     set AppleScript's text item delimiters to "/"
-    set parts to text items of mailboxName
-    if (count of parts) < 2 then
+    set pathParts to text items of mailboxName
+    if (count of pathParts) < 2 then
         set AppleScript's text item delimiters to ""
         error "mailbox must be an account-qualified path, e.g. 'iCloud/Receipts'"
     end if
-    set acctName to item 1 of parts
-    set segs to items 2 thru -1 of parts
+    set accountName to item 1 of pathParts
+    set withinAccountSegments to items 2 thru -1 of pathParts
     set AppleScript's text item delimiters to ""
 
     -- Idempotent: if the full path already exists, report it unchanged.
     try
-        set existing to resolve_mailbox(mailboxName)
-        return "exists|" & (my mailbox_path(existing))
+        set existingMailbox to resolve_mailbox(mailboxName)
+        return "exists|" & (my mailbox_path(existingMailbox))
     end try
 
     tell application "Mail"
-        if acctName is not in (name of every account) then
-            error "No such account '" & acctName & "'. Use the account name shown by mail_list_mailboxes (the first path segment)."
+        if accountName is not in (name of every account) then
+            error "No such account '" & accountName & "'. Use the account name shown by mail_list_mailboxes (the first path segment)."
         end if
     end tell
 
     -- Create each cumulative level explicitly, top-down, skipping existing ones.
-    set prefix to ""
-    repeat with i from 1 to (count of segs)
-        if i is 1 then
-            set prefix to item i of segs
+    set cumulativePath to ""
+    repeat with segmentIndex from 1 to (count of withinAccountSegments)
+        if segmentIndex is 1 then
+            set cumulativePath to item segmentIndex of withinAccountSegments
         else
-            set prefix to prefix & "/" & (item i of segs)
+            set cumulativePath to cumulativePath & "/" & (item segmentIndex of withinAccountSegments)
         end if
+
         set levelExists to false
         try
-            resolve_mailbox(acctName & "/" & prefix)
+            resolve_mailbox(accountName & "/" & cumulativePath)
             set levelExists to true
         end try
         if not levelExists then
             tell application "Mail"
-                make new mailbox at end of mailboxes of account acctName with properties {name:prefix}
+                make new mailbox at end of mailboxes of account accountName with properties {name:cumulativePath}
             end tell
             delay 1
         end if
     end repeat
 
     -- Confirm and return the canonical path of the created mailbox.
-    set created to resolve_mailbox(mailboxName)
-    return "created|" & (my mailbox_path(created))
+    set createdMailbox to resolve_mailbox(mailboxName)
+    return "created|" & (my mailbox_path(createdMailbox))
 end create_mailbox
