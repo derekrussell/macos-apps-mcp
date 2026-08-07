@@ -1,5 +1,7 @@
 # macos-apps-mcp
 
+[![CI](https://github.com/derekrussell/macos-apps-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/derekrussell/macos-apps-mcp/actions/workflows/ci.yml)
+
 A local [MCP](https://modelcontextprotocol.io) server that gives an MCP client
 (Claude Desktop, Cursor, Zed, VS Code, and others) read-and-organize access to
 Apple's built-in productivity apps on **macOS**: **Mail**, **Reminders**, and
