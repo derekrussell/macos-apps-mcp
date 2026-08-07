@@ -25,12 +25,11 @@ scripts/utilities.applescript  Shared AppleScript handlers, loaded once per invo
 tests/                     pytest suite covering the pure Python logic in isolation
                            (parsers, pagination, routing, the reminder index, and the
                            handlers via a faked _run_script). Run: pytest.
-tools/filesystem.py        Stub (0 tools). The file_* namespace is reserved, unused.
 config.py                  (empty)
 ```
 
 - **Dispatch:** `server.py` routes by prefix — `mail_` → `tools/mail.py`, `notes_` →
-  `tools/notes.py`, `reminder_` → `tools/reminders.py`, `file_` → stub.
+  `tools/notes.py`, `reminder_` → `tools/reminders.py`.
 - **osascript boundary:** the one runner is `run_osascript(script_path, action, *args,
   timeout=60)` in `tools/_osascript.py`; each domain module keeps a thin `_run_script`
   wrapper that binds its own script path. The runner normalises CR/CRLF (so a stray CR

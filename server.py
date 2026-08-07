@@ -15,7 +15,6 @@ Tool namespacing convention -- a tool's name prefix selects its module:
     mail_*      -> tools/mail.py
     notes_*     -> tools/notes.py
     reminder_*  -> tools/reminders.py
-    file_*      -> tools/filesystem.py
 """
 
 import asyncio
@@ -23,7 +22,7 @@ import asyncio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from tools import filesystem, mail, notes, reminders
+from tools import mail, notes, reminders
 
 # Map each tool-name prefix to the module that implements those tools. The
 # prefixes are mutually exclusive, so lookup order does not matter. Adding a new
@@ -32,7 +31,6 @@ MODULE_BY_TOOL_PREFIX = {
     "mail_": mail,
     "notes_": notes,
     "reminder_": reminders,
-    "file_": filesystem,
 }
 
 app = Server("apple-assistant")
@@ -49,7 +47,7 @@ def select_tool_module(tool_name: str):
         tool_name: The full tool name, e.g. "mail_search".
 
     Returns:
-        The module (mail, notes, reminders, or filesystem) that handles it.
+        The module (mail, notes, or reminders) that handles it.
 
     Raises:
         ValueError: If no registered prefix matches the name.
