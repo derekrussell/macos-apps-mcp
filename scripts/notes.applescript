@@ -1,5 +1,5 @@
 -- notes.applescript
--- Handles all Apple Notes actions for the apple-mcp server.
+-- Handles all Apple Notes actions for the macos-apps-mcp server.
 --
 -- Called by tools/notes.py via:
 --   osascript notes.applescript <action> [args...]

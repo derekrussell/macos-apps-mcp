@@ -1,4 +1,4 @@
-# apple-mcp
+# macos-apps-mcp
 
 A local macOS **MCP server** that exposes Apple **Mail**, **Reminders**, and **Notes**
 to an MCP client (e.g. Claude Desktop) over stdio. Every operation is performed by

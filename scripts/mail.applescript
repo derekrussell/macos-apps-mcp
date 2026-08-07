@@ -1,5 +1,5 @@
 -- mail.applescript
--- Handles all Apple Mail actions for the apple-mcp server.
+-- Handles all Apple Mail actions for the macos-apps-mcp server.
 --
 -- Called by tools/mail.py via:
 --   osascript mail.applescript <action> [args...]
