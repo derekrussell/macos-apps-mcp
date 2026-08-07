@@ -1,7 +1,7 @@
 """Apple Notes tools for the MCP server.
 
-Exposes seven tools that let the client read, search, and create
-notes in Apple Notes via AppleScript:
+Exposes seven tools that let the client read, search, create, and edit notes in
+Apple Notes via AppleScript:
 
     notes_list_folders  — List all folders
     notes_get           — Fetch notes from a folder, with pagination
@@ -9,29 +9,29 @@ notes in Apple Notes via AppleScript:
     notes_create        — Create a new note
     notes_delete        — Delete a note
     notes_update        — Update the title or body of a note
-    notes_append        — Append text to an existing note. 
+    notes_append        — Append text to an existing note
 
-AppleScript is invoked via osascript, passing
-scripts/notes.applescript as the script file and an action keyword as the first argument.
+AppleScript is invoked via osascript, passing scripts/notes.applescript as the
+script file and an action keyword as the first argument.
 
 Note:
-    Note IDs used by these tools are the internal ID values
-    assigned by Apple Notes. Always use the id field returned
-    by notes_get or notes_search when calling notes_delete.
+    Note IDs used by these tools are the internal id values assigned by Apple
+    Notes. Always use the id field returned by notes_get or notes_search when
+    calling the mutation tools (notes_delete, notes_update, notes_append).
 
     The modified_date field is returned in ISO 8601 format
     (YYYY-MM-DDTHH:MM:SS), matching the reminders tools.
 
-    Pass "default" as the folder name to target the user's default Notes folder without needing to know its name.
+    Pass "default" as the folder name to target the user's default Notes folder
+    without needing to know its name.
 """
 
-import asyncio
 import json
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
 
-from ._osascript import clean_osascript_error
+from ._osascript import DEFAULT_TIMEOUT_SECONDS, run_osascript
 
 _SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 _NOTES_SCRIPT = _SCRIPTS_DIR / "notes.applescript"
@@ -192,7 +192,7 @@ TOOLS: list[Tool] = [
                     "description": "New body content for the note. Replaces the entire existing body.",
                 },
             },
-            "required": ["note_id",]
+            "required": ["note_id"]
         },
     ),
     Tool(
@@ -221,61 +221,57 @@ TOOLS: list[Tool] = [
 
 
 # ------------------------------------------------------------
-# Section C — Private helpers
+# Section C — osascript wrapper
 # ------------------------------------------------------------
 
-async def _run_script(action: str, *args: str) -> str:
-    """Run notes.applescript with the given action and arguments.
-
-    Args:
-        action: The action keyword the AppleScript handler dispatches on.
-        *args:  Zero or more additional string arguments.
-
-    Returns:
-        The trimmed stdout produced by the script.
-
-    Raises:
-        RuntimeError: If osascript exits with a non-zero return code,
-                      with the stderr output included in the message.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        "osascript", str(_NOTES_SCRIPT), action, *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+async def _run_script(
+    action: str,
+    *arguments: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+) -> str:
+    """Run notes.applescript through the shared osascript runner."""
+    return await run_osascript(
+        _NOTES_SCRIPT, action, *arguments, timeout=timeout
     )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-    except asyncio.TimeoutError:
-        proc.kill()
-        # Reap the killed child so it does not linger and hold its pipes open.
-        # An osascript blocked inside a synchronous Apple event ignores SIGKILL
-        # until that event returns, so bound the wait rather than hang here.
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            pass
-        raise RuntimeError(f"osascript timeout (action={action!r}): script took too long")
 
-    if proc.returncode != 0:
-        raise RuntimeError(clean_osascript_error(stderr.decode()))
 
-    # Normalise line endings so splitlines() does not treat a stray CR as a
-    # record boundary and shift fields (mirrors the mail/reminders tools).
-    return stdout.decode().replace('\r\n', '\n').replace('\r', '\n').strip()
+# ------------------------------------------------------------
+# Section D — MCP content helpers
+# ------------------------------------------------------------
+
+def _json_content(payload) -> list[TextContent]:
+    """Wrap a JSON-serialisable payload as a single MCP text content item."""
+    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+
+def _text_content(text: str) -> list[TextContent]:
+    """Wrap a plain string as a single MCP text content item."""
+    return [TextContent(type="text", text=text)]
+
+
+# ------------------------------------------------------------
+# Section E — Output parsers (pure)
+# ------------------------------------------------------------
+
+def _parse_folder_line(line: str) -> dict | None:
+    """Parse one "name|count" folder line into a dict.
+
+    Returns None if the line does not split into exactly two fields.
+    """
+    parts = line.split("|", maxsplit=1)
+    if len(parts) != 2:
+        return None
+    name, count_text = parts
+    return {"name": name, "count": int(count_text)}
 
 
 def _parse_note(line: str) -> dict | None:
     """Parse one pipe-delimited note record into a dict.
 
-    Expected format:
-        id|title|folder|modified_date
+    Expected format: id|title|folder|modified_date
 
-    Args:
-        line: A single line of AppleScript output.
-
-    Returns:
-        A dict with keys id, title, folder, and modified_date.
-        Returns None if the line does not contain exactly 4 fields.
+    An empty modified_date becomes None. Returns None if the line does not
+    contain exactly four fields.
     """
     parts = line.split("|", maxsplit=3)
     if len(parts) != 4:
@@ -285,106 +281,150 @@ def _parse_note(line: str) -> dict | None:
         "id": note_id,
         "title": title,
         "folder": folder,
-        "modified_date": modified_date if modified_date else None,
+        "modified_date": modified_date or None,
     }
 
 
+def _paginate(items: list, offset: int, count: int):
+    """Slice ``items`` for offset/count pagination.
+
+    Returns a (page, total, has_more) tuple. A negative count returns everything
+    from ``offset`` onward.
+    """
+    total = len(items)
+    page = items[offset:offset + count] if count >= 0 else items[offset:]
+    has_more = offset + len(page) < total
+    return page, total, has_more
+
+
 # ------------------------------------------------------------
-# Section D — Public Interface
+# Section F — Per-tool handlers
+# ------------------------------------------------------------
+
+async def _handle_list_folders(arguments: dict) -> list[TextContent]:
+    del arguments  # no arguments; the parameter exists for a uniform dispatch signature
+    raw = await _run_script("list_folders")
+    folders = [
+        parsed for parsed in
+        (_parse_folder_line(line) for line in raw.splitlines())
+        if parsed is not None
+    ]
+    return _json_content(folders)
+
+
+async def _handle_get(arguments: dict) -> list[TextContent]:
+    folder = arguments.get("folder", "default")
+    count = int(arguments.get("count", 50))
+    offset = int(arguments.get("offset", 0))
+
+    raw = await _run_script("get_notes", folder, str(count), str(offset))
+
+    # The script paginates and puts the total note count on the first line.
+    lines = raw.splitlines() if raw else []
+    total = int(lines[0]) if lines else 0
+    notes = [
+        parsed for parsed in
+        (_parse_note(line) for line in lines[1:])
+        if parsed is not None
+    ]
+    returned = len(notes)
+    return _json_content({
+        "total": total,
+        "offset": offset,
+        "returned": returned,
+        "has_more": offset + returned < total,
+        "notes": notes,
+    })
+
+
+async def _handle_search(arguments: dict) -> list[TextContent]:
+    query = arguments["query"]
+    count = int(arguments.get("count", 50))
+    offset = int(arguments.get("offset", 0))
+
+    raw = await _run_script("search", query)
+    matches = [
+        parsed for parsed in
+        (_parse_note(line) for line in raw.splitlines())
+        if parsed is not None
+    ]
+
+    page, total, has_more = _paginate(matches, offset, count)
+    return _json_content({
+        "status": "ok",
+        "total": total,
+        "offset": offset,
+        "returned": len(page),
+        "has_more": has_more,
+        "notes": page,
+    })
+
+
+async def _handle_create(arguments: dict) -> list[TextContent]:
+    title = arguments["title"]
+    body = arguments.get("body", "")
+    folder = arguments.get("folder", "default")
+    note_id = await _run_script("create", title, body, folder)
+    return _text_content(note_id)
+
+
+async def _handle_delete(arguments: dict) -> list[TextContent]:
+    note_id = arguments["note_id"]
+    await _run_script("delete", note_id)
+    return _text_content(f"Deleted {note_id!r}.")
+
+
+async def _handle_update(arguments: dict) -> list[TextContent]:
+    note_id = arguments["note_id"]
+    title = arguments.get("title", "")
+    body = arguments.get("body", "")
+    await _run_script("update", note_id, title, body)
+    return _text_content(f"Updated {note_id!r}.")
+
+
+async def _handle_append(arguments: dict) -> list[TextContent]:
+    note_id = arguments["note_id"]
+    text = arguments["text"]
+    await _run_script("append", note_id, text)
+    return _text_content(f"Appended to {note_id!r}.")
+
+
+_TOOL_HANDLERS = {
+    "notes_list_folders": _handle_list_folders,
+    "notes_get": _handle_get,
+    "notes_search": _handle_search,
+    "notes_create": _handle_create,
+    "notes_delete": _handle_delete,
+    "notes_update": _handle_update,
+    "notes_append": _handle_append,
+}
+
+
+# ------------------------------------------------------------
+# Section G — Public interface
 # ------------------------------------------------------------
 
 async def list_tools() -> list[Tool]:
-    """Return the Tool definitions for the notes domain.
-
-    Returns:
-        The module-level TOOLS list containing all notes Tool definitions.
-    """
+    """Return the Tool definitions for the notes domain."""
     return TOOLS
 
 
 async def handle(name: str, arguments: dict) -> list[TextContent]:
-    """Dispatch a notes tool call to the correct implementation.
+    """Dispatch a notes tool call to its handler.
 
     Args:
         name:      The tool name, e.g. "notes_create".
         arguments: Dict of validated arguments from the client.
 
     Returns:
-        A single-element list containing a TextContent with the
-        result as text or JSON.
+        A single-element list containing a TextContent with the result.
 
     Raises:
         ValueError:   If the tool name is not recognised.
         RuntimeError: If the underlying AppleScript call fails.
     """
-    if name == "notes_list_folders":
-        raw = await _run_script("list_folders")
-        folders = []
-        for line in raw.splitlines():
-            parts = line.split("|", maxsplit=1)
-            if len(parts) == 2:
-                folders.append({"name": parts[0], "count": int(parts[1])})
-        return [TextContent(type="text", text=json.dumps(folders, indent=2))]
-
-    if name == "notes_get":
-        folder = arguments.get("folder", "default")
-        count = int(arguments.get("count", 50))
-        offset = int(arguments.get("offset", 0))
-        raw = await _run_script("get_notes", folder, str(count), str(offset))
-        lines = raw.splitlines() if raw else []
-        total = int(lines[0]) if lines else 0
-        notes = [n for n in (_parse_note(line) for line in lines[1:]) if n]
-        return [TextContent(type="text", text=json.dumps({
-            "total": total,
-            "offset": offset,
-            "returned": len(notes),
-            "has_more": offset + len(notes) < total,
-            "notes": notes,
-        }, indent=2))]
-
-    if name == "notes_search":
-        query = arguments["query"]
-        count = int(arguments.get("count", 50))
-        offset = int(arguments.get("offset", 0))
-        raw = await _run_script("search", query)
-        matches = [n for n in (_parse_note(line)
-                               for line in raw.splitlines()) if n]
-        # Paginate: a broad query can match many notes, and an unbounded
-        # response overflows the client's payload limit.
-        total = len(matches)
-        page = matches[offset:offset + count] if count >= 0 else matches[offset:]
-        return [TextContent(type="text", text=json.dumps({
-            "status": "ok",
-            "total": total,
-            "offset": offset,
-            "returned": len(page),
-            "has_more": offset + len(page) < total,
-            "notes": page,
-        }, indent=2))]
-
-    if name == "notes_create":
-        title = arguments["title"]
-        body = arguments.get("body", "")
-        folder = arguments.get("folder", "default")
-        note_id = await _run_script("create", title, body, folder)
-        return [TextContent(type="text", text=note_id)]
-
-    if name == "notes_delete":
-        note_id = arguments["note_id"]
-        await _run_script("delete", note_id)
-        return [TextContent(type="text", text=f"Deleted {note_id!r}.")]
-
-    if name == "notes_update":
-        note_id = arguments["note_id"]
-        title = arguments.get("title", "")
-        body = arguments.get("body", "")
-        await _run_script("update", note_id, title, body)
-        return [TextContent(type="text", text=f"Updated {note_id!r}.")]
-
-    if name == "notes_append":
-        note_id = arguments["note_id"]
-        text = arguments["text"]
-        await _run_script("append", note_id, text)
-        return [TextContent(type="text", text=f"Appended to {note_id!r}.")]
-
-    raise ValueError(f"Unknown notes tool: '{name}'.")
+    try:
+        tool_handler = _TOOL_HANDLERS[name]
+    except KeyError:
+        raise ValueError(f"Unknown notes tool: '{name}'.")
+    return await tool_handler(arguments)
