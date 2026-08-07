@@ -131,7 +131,10 @@ EventKit** (see gotchas). Instead:
 
 ## Run & verify
 
-- **Dependency:** `mcp>=1.27.1` (`requirements.txt`). Run: `python server.py` (stdio;
+- **Dependency:** `mcp>=1.27.1,<2.0` (`requirements.txt`). The cap is deliberate:
+  mcp 2.0 is a breaking major that removed the low-level `Server.list_tools` /
+  `call_tool` decorator API this server is built on. Migrating to 2.x is tracked
+  separately. Run: `python server.py` (stdio;
   normally launched by the MCP client, e.g. Claude Desktop).
 - **Python syntax check:** `python3 -m py_compile tools/*.py server.py`.
 - **Unit tests:** `pytest` (install dev deps with `pip install -r requirements-dev.txt`;
