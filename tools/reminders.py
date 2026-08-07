@@ -569,7 +569,9 @@ def warm_index() -> None:
 # Section G — Per-tool handlers
 # ------------------------------------------------------------
 
-async def _handle_list_lists(arguments: dict) -> list[TextContent]:
+async def _handle_list_lists(_arguments: dict) -> list[TextContent]:
+    # This tool takes no arguments; the parameter exists for a uniform dispatch
+    # signature, so it is prefixed with "_" to mark it intentionally unused.
     raw = await _run_script("list_lists")
     lists = [
         parsed for parsed in
