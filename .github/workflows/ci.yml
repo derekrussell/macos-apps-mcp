@@ -1,0 +1,42 @@
+name: CI
+
+# Run the fast, pure-Python unit tests on every push and pull request.
+#
+# These tests fake the osascript boundary (no subprocess is spawned, no Apple
+# app is touched), so they run on a plain Linux runner despite the project
+# being macOS-only at runtime. The end-to-end SMOKE_TEST.md sequence needs a
+# real Mac with Mail/Reminders/Notes and is intentionally NOT run here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The project targets Python 3.10+ (uses X | None unions).
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Byte-compile check
+        run: python -m py_compile server.py tools/*.py
+
+      - name: Run unit tests
+        run: pytest
