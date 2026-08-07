@@ -15,73 +15,82 @@
 -- Returning the script object at the top level is what exposes the handlers
 -- to the caller; running this file on its own simply returns the object.
 
-script utilLib
-    -- Replace each delimiter/newline character (|, LF, CR) with a space so a
-    -- field can never break the pipe-delimited, one-record-per-line format.
-    -- The split (text items) and join (as text) must use DIFFERENT delimiters:
-    -- splitting and joining on the same delimiter is a no-op.
-    on sanitise_field(str)
-        set str to str as text
-        set AppleScript's text item delimiters to "|"
-        set theItems to text items of str
-        set AppleScript's text item delimiters to " "
-        set str to theItems as text
-        set AppleScript's text item delimiters to linefeed
-        set theItems to text items of str
-        set AppleScript's text item delimiters to " "
-        set str to theItems as text
-        set AppleScript's text item delimiters to return
-        set theItems to text items of str
-        set AppleScript's text item delimiters to " "
-        set str to theItems as text
-        set AppleScript's text item delimiters to ""
-        return str
+script sharedHandlers
+    -- Replace the delimiter and newline characters (|, LF, CR) with spaces so a
+    -- field can never break the pipe-delimited, one-record-per-line wire format.
+    on sanitise_field(inputValue)
+        set fieldText to inputValue as text
+        set fieldText to my replace_text(fieldText, "|", " ")
+        set fieldText to my replace_text(fieldText, linefeed, " ")
+        set fieldText to my replace_text(fieldText, return, " ")
+        return fieldText
     end sanitise_field
+
+    -- Replace every occurrence of searchText with replacementText.
+    -- The split (text items) and the join (as text) MUST use DIFFERENT
+    -- delimiters: splitting and joining on the same delimiter is a no-op, which
+    -- is why the delimiter is set once for each step.
+    on replace_text(sourceText, searchText, replacementText)
+        set AppleScript's text item delimiters to searchText
+        set splitPieces to text items of sourceText
+        set AppleScript's text item delimiters to replacementText
+        set rejoinedText to splitPieces as text
+        set AppleScript's text item delimiters to ""
+        return rejoinedText
+    end replace_text
 
     -- Parse an ISO 8601 string (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS) into an
     -- AppleScript date by building it from components. AppleScript's own
     -- `date "..."` coercion is locale-dependent and mangles ISO strings
     -- (e.g. "2026-07-29T09:00:00" becomes 16 January 2035), so never use it.
-    -- `day` is set to 1 before changing month/year to avoid end-of-month
-    -- rollover (e.g. 31 January -> "31 February").
-    on parse_iso_date(isoStr)
-        set y to (text 1 thru 4 of isoStr) as integer
-        set mo to (text 6 thru 7 of isoStr) as integer
-        set d to (text 9 thru 10 of isoStr) as integer
-        set hh to 0
-        set mi to 0
-        set ss to 0
-        if (count of isoStr) ≥ 19 then
-            set hh to (text 12 thru 13 of isoStr) as integer
-            set mi to (text 15 thru 16 of isoStr) as integer
-            set ss to (text 18 thru 19 of isoStr) as integer
+    on parse_iso_date(isoString)
+        set yearValue to (text 1 thru 4 of isoString) as integer
+        set monthValue to (text 6 thru 7 of isoString) as integer
+        set dayValue to (text 9 thru 10 of isoString) as integer
+
+        -- The time part is optional; default to midnight when absent.
+        set hourValue to 0
+        set minuteValue to 0
+        set secondValue to 0
+        if (count of isoString) ≥ 19 then
+            set hourValue to (text 12 thru 13 of isoString) as integer
+            set minuteValue to (text 15 thru 16 of isoString) as integer
+            set secondValue to (text 18 thru 19 of isoString) as integer
         end if
-        set theDate to current date
-        set day of theDate to 1
-        set year of theDate to y
-        set month of theDate to mo
-        set day of theDate to d
-        set hours of theDate to hh
-        set minutes of theDate to mi
-        set seconds of theDate to ss
-        return theDate
+
+        -- Build the date from its components. Set the day to 1 BEFORE changing
+        -- month/year to avoid end-of-month rollover (e.g. 31 January would
+        -- otherwise spill into "31 February").
+        set resultDate to current date
+        set day of resultDate to 1
+        set year of resultDate to yearValue
+        set month of resultDate to monthValue
+        set day of resultDate to dayValue
+        set hours of resultDate to hourValue
+        set minutes of resultDate to minuteValue
+        set seconds of resultDate to secondValue
+        return resultDate
     end parse_iso_date
 
     -- Format a date as ISO 8601 (YYYY-MM-DDTHH:MM:SS) without shell invocation.
     on format_date(theDate)
-        set y to year of theDate as text
-        set mo to month of theDate as integer
-        set d to day of theDate as integer
-        set h to hours of theDate
-        set mi to minutes of theDate
-        set s to seconds of theDate
-        if mo < 10 then set mo to "0" & mo
-        if d < 10 then set d to "0" & d
-        if h < 10 then set h to "0" & h
-        if mi < 10 then set mi to "0" & mi
-        if s < 10 then set s to "0" & s
-        return y & "-" & mo & "-" & d & "T" & h & ":" & mi & ":" & s
+        set yearText to (year of theDate) as text
+        set monthText to my pad_two_digits((month of theDate) as integer)
+        set dayText to my pad_two_digits((day of theDate) as integer)
+        set hourText to my pad_two_digits(hours of theDate)
+        set minuteText to my pad_two_digits(minutes of theDate)
+        set secondText to my pad_two_digits(seconds of theDate)
+        return yearText & "-" & monthText & "-" & dayText & "T" & hourText & ":" & minuteText & ":" & secondText
     end format_date
+
+    -- Return a number as text, zero-padded to at least two digits (e.g. 5 -> "05").
+    on pad_two_digits(numberValue)
+        if numberValue < 10 then
+            return "0" & numberValue
+        else
+            return numberValue as text
+        end if
+    end pad_two_digits
 end script
 
-return utilLib
+return sharedHandlers
