@@ -42,10 +42,28 @@ pip install -r requirements-dev.txt   # runtime deps + pytest
 
 ## Make your change
 
-1. **Branch** off `main`: `git checkout -b my-change`.
+1. **Branch** off `main` using the naming convention below.
 2. Make the change, following the conventions below.
 3. **Add or update tests** for any Python logic you touch (see Testing).
 4. Keep commits focused and write clear commit messages.
+
+### Branch naming
+
+Name branches `<type>/<short-kebab-description>`, optionally prefixing the
+description with the issue number when one exists
+(`<type>/<issue#>-<short-kebab-description>`):
+
+| Type | Use | Example |
+| --- | --- | --- |
+| `feat/` | new tool or capability | `feat/12-calendar-get-events` |
+| `new-app/` | a whole new app module | `new-app/1-calendar` |
+| `fix/` | bug fix | `fix/reminder-search-timeout` |
+| `docs/` | docs / templates only | `docs/contributing-tweak` |
+| `chore/` | dependencies, CI, tooling | `chore/6-migrate-mcp-2x` |
+
+The `type/` prefix mirrors the issue labels, and the optional issue number links
+the branch to its issue. This is a guideline, not an enforced rule — no push is
+blocked for not following it.
 
 ### Code conventions
 
