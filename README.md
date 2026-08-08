@@ -104,6 +104,38 @@ process (your MCP client / terminal) to control Mail, Reminders, or Notes.
 later under **System Settings → Privacy & Security → Automation**. Reminders
 also relies on EventKit access under the hood.
 
+## Usage
+
+Once the server is connected, you don't call the tools directly — you ask your
+MCP client (e.g. Claude) in plain language, and it picks the right tool. It works
+entirely on your Mac against the apps you're already signed in to; nothing is
+sent anywhere else. Today it's focused on **reading and organizing** — it doesn't
+send mail.
+
+Example things you can ask:
+
+**Mail**
+- "Show me my unread mail from this week."
+- "Search my mail for messages from Jane about the invoice."
+- "What's in the body of the latest message from my bank?"
+- "How many messages are in my Archive mailbox?"
+- "Move that message to my 'Receipts' mailbox."
+
+**Reminders**
+- "Add a reminder to call the dentist tomorrow at 3pm."
+- "What's on my Today list?"
+- "Find my reminders mentioning 'passport'."
+- "Mark the 'buy milk' reminder as done."
+
+**Notes**
+- "Create a note titled 'Trip packing list' with a few starter items."
+- "Find my notes that mention the Q3 budget."
+- "Append 'remember chargers' to my packing list note."
+- "What folders do I have in Notes?"
+
+You can also combine them — for example, "Find the reminder about the dentist and
+add its date to a new note" — and the client will chain the relevant tools.
+
 ## Known limitations
 
 These come from AppleScript / the apps themselves, not from this server:
