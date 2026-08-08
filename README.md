@@ -138,7 +138,9 @@ validation against the live apps is the manual sequence in
 [`CLAUDE.md`](CLAUDE.md).
 
 Bug reports and feature requests (including new apps) are welcome in the
-[issue tracker](../../issues).
+[issue tracker](../../issues). If you'd like to contribute code, please read the
+[contributing guide](CONTRIBUTING.md) first — it covers setup, conventions, the
+two-tier test model, and the CI-gated PR workflow.
 
 ## License
 
