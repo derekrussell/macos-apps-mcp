@@ -1,0 +1,44 @@
+name: New app support
+description: Propose support for an additional macOS app (Calendar, Contacts, Messages, …)
+labels: ["new-app", "enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding an app follows the existing per-domain pattern: a `tools/<domain>.py` module plus a `scripts/<domain>.applescript`, dispatched by a name prefix in `server.py`. See [`CONTRIBUTING.md`](https://github.com/derekrussell/macos-apps-mcp/blob/main/CONTRIBUTING.md) and [`CLAUDE.md`](https://github.com/derekrussell/macos-apps-mcp/blob/main/CLAUDE.md).
+  - type: input
+    id: app
+    attributes:
+      label: Which app?
+      placeholder: e.g. Calendar
+    validations:
+      required: true
+  - type: dropdown
+    id: scope-check
+    attributes:
+      label: Scope check
+      description: "In scope: Apple's built-in productivity / personal-information apps, accessed via AppleScript only."
+      options:
+        - "Yes — a built-in Apple productivity app, scriptable via AppleScript"
+        - "Not sure — happy to discuss"
+        - "No / it's out of that scope"
+    validations:
+      required: true
+  - type: textarea
+    id: tools
+    attributes:
+      label: Proposed tools
+      description: A rough list of the tools this app would expose (name + purpose). Follow the existing naming style, e.g. `calendar_list_calendars`, `calendar_get_events`.
+      placeholder: |
+        - calendar_list_calendars — list calendars
+        - calendar_get_events — events in a date range (paginated)
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: applescript-notes
+    attributes:
+      label: AppleScript feasibility / risks
+      description: Anything you know about scripting this app — known limitations, whether it's EventKit-backed (like Reminders, which risks wedging on repeated scans), outbound/hard-to-reverse actions (like sending), or sensitive data handling.
+    validations:
+      required: false

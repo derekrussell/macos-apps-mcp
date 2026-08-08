@@ -1,0 +1,71 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much as you can — it makes the problem far quicker to reproduce and fix.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe? Include the exact error message if there was one.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    id: tool
+    attributes:
+      label: Tool and arguments
+      description: 'Which tool did you call, and with what arguments? (e.g. `reminder_search {"query": "milk"}`)'
+      placeholder: 'tool_name {"arg": "value"}'
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The sequence of actions that triggers the bug.
+      placeholder: |
+        1. Call ...
+        2. With ...
+        3. See error ...
+    validations:
+      required: false
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: e.g. macOS 15.6 (Sequoia)
+    validations:
+      required: true
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: e.g. 3.12.3
+    validations:
+      required: true
+  - type: input
+    id: mcp-client
+    attributes:
+      label: MCP client
+      description: Which client were you using?
+      placeholder: e.g. Claude Desktop
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or extra context
+      description: Any relevant logs, screenshots, or other context. (Please redact personal data — the tools touch mail, notes, and reminders.)
+      render: text
+    validations:
+      required: false
