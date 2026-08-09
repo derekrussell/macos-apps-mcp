@@ -30,7 +30,11 @@ personal-information apps on macOS, performed **exclusively through
 AppleScript / `osascript`**.
 
 - **Today:** Mail, Reminders, Notes.
-- **Planned:** Calendar, Contacts, Messages (tracked as issues).
+- **Being considered:** Calendar, Contacts, Messages, and composing/sending
+  mail — tracked as [issues](../../issues). These are candidates, not
+  commitments: the roadmap is driven by real everyday use of the server, so
+  what gets built next (and its exact shape) follows what that use shows is
+  actually needed.
 
 **Out of scope:** non-Apple apps, creative apps (Photos editing, Music),
 system administration, and anything that can't be driven through AppleScript.
