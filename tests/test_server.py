@@ -69,6 +69,6 @@ def test_collect_tool_definitions_matches_per_module_counts():
     notes_tools = [name for name in names if name.startswith("notes_")]
     reminder_tools = [name for name in names if name.startswith("reminder_")]
 
-    assert len(mail_tools) == 9
+    assert len(mail_tools) == 10
     assert len(notes_tools) == 7
     assert len(reminder_tools) == 7

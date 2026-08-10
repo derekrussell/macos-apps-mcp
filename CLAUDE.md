@@ -44,11 +44,11 @@ config.py                  (empty)
   `util's format_date(...)`. Inside a `tell application` block these need
   `my (util's ...)`.
 
-## Tools (23)
+## Tools (24)
 
-**Mail (9):** `mail_get_messages` · `mail_search` · `mail_count_messages` ·
-`mail_list_mailboxes` · `mail_get_body` · `mail_move` · `mail_delete` ·
-`mail_rename_mailbox` · `mail_create_mailbox`
+**Mail (10):** `mail_get_messages` · `mail_search` · `mail_count_messages` ·
+`mail_list_mailboxes` · `mail_get_body` · `mail_get_images` · `mail_move` ·
+`mail_delete` · `mail_rename_mailbox` · `mail_create_mailbox`
 
 **Reminders (7):** `reminder_list_lists` · `reminder_get` · `reminder_search` ·
 `reminder_create` · `reminder_complete` · `reminder_update` · `reminder_delete`

@@ -212,7 +212,8 @@ def test_handle_create_mailbox_created(monkeypatch):
         "mail_create_mailbox", {"mailbox": "iCloud/Receipts"}
     ))
     payload = json.loads(result[0].text)
-    assert payload == {"status": "ok", "path": "iCloud/Receipts", "created": True}
+    assert payload == {"status": "ok",
+                       "path": "iCloud/Receipts", "created": True}
 
 
 def test_handle_create_mailbox_already_exists(monkeypatch):
@@ -225,3 +226,115 @@ def test_handle_create_mailbox_already_exists(monkeypatch):
     ))
     payload = json.loads(result[0].text)
     assert payload["created"] is False
+
+
+# ---------------------------------------------------------------------------
+# mail_get_images: MIME/HTML parsing and the handler
+# ---------------------------------------------------------------------------
+
+def _html_message(html_body: str, encoding: str = "7bit") -> str:
+    """Build a minimal single-part text/html MIME message for tests."""
+    return (
+        "Content-Type: text/html; charset=utf-8\r\n"
+        f"Content-Transfer-Encoding: {encoding}\r\n\r\n"
+        f"{html_body}\r\n"
+    )
+
+
+def test_extract_html_parts_decodes_quoted_printable():
+    # "=3D" is an encoded "=" in quoted-printable.
+    src = (
+        "Content-Type: text/html; charset=utf-8\r\n"
+        "Content-Transfer-Encoding: quoted-printable\r\n\r\n"
+        "<img src=3D\"https://ex.com/a.png\">\r\n"
+    )
+    parts = mail._extract_html_parts(src)
+    assert len(parts) == 1
+    assert 'src="https://ex.com/a.png"' in parts[0]
+
+
+def test_extract_html_parts_empty_for_plain_text_only():
+    src = "Content-Type: text/plain; charset=utf-8\r\n\r\njust test\r\n"
+    assert mail._extract_html_parts(src) == []
+
+
+def test_parse_dimension_handles_number_unit_and_junk():
+    assert mail._parse_dimension("600") == 600
+    assert mail._parse_dimension("600px") == 600
+    assert mail._parse_dimension("100%") is None
+    assert mail._parse_dimension("") is None
+
+
+def test_looks_like_tracker_flags_tiny_and_marked_urls():
+    # 1x1 pixel.
+    assert mail._looks_like_tracker(
+        "https://ex.com/x.png", 1, 1) is True
+    # A high-confidence URL marker, normal size.
+    assert mail._looks_like_tracker(
+        "https://t.com/wf/open?id=1", None, None) is True
+    # Real content image
+    assert mail._looks_like_tracker(
+        "https://cdn.com/cover.png", 600, 400) is False
+
+
+def test_build_image_skips_data_and_cid_and_srcless():
+    assert mail._build_image({"src": "data:image/gif;base64,AAAA"}) is None
+    assert mail._build_image({"src": "cid:logo123"}) is None
+    assert mail._build_image({}) is None
+
+
+def test_build_image_keeps_http_and_protocol_relative():
+    http = mail._build_image(
+        {"src": "https://ex.com/a.png", "alt": " Cover art "})
+    assert http["url"] == "https://ex.com/a.png"
+    assert http["alt"] == "Cover art"  # whitespace collapsed
+    rel = mail._build_image({"src": "//cdn.ex.com/b.jpg"})
+    assert rel["url"] == "//cdn.ex.com/b.jpg"
+
+
+def test_extract_images_dedupes_and_flags():
+    src = _html_message(
+        '<img src="https://cdn.ex.com/cover.png" width="600" height="400">'
+        '<img src="https://t.ex.com/pixel.gif" width="1" height="1">'
+        '<img src="https://cdn.ex.com/cover.png">'  # duplicate URL
+    )
+    images = mail._extract_images(src)
+    urls = [i["url"] for i in images]
+    assert urls == [
+        "https://cdn.ex.com/cover.png",
+        "https://t.ex.com/pixel.gif",
+    ]  # duplicate collapsed
+    assert images[0]["likely_tracker"] is False
+    assert images[1]["likely_tracker"] is True
+
+
+def test_handle_get_images_builds_envelope(monkeypatch):
+    async def fake_run(action, *args, **kwargs):
+        assert action == "get_source"
+        assert args == ("m-1",)
+        return _html_message(
+            '<img src="https://cdn.ex.com/a.png" alt="Art" width="600" height="400">'
+            '<img src="https://t.ex.com/beacon" width="1" height="1">'
+        )
+
+    monkeypatch.setattr(mail, "_run_script", fake_run)
+    result = asyncio.run(mail.handle("mail_get_images", {"message_id": "m-1"}))
+    payload = json.loads(result[0].text)
+
+    assert payload["status"] == "ok"
+    assert payload["message_id"] == "m-1"
+    assert payload["total"] == 2
+    assert payload["tracker_count"] == 1
+    assert payload["images"][0]["url"] == "https://cdn.ex.com/a.png"
+
+
+def test_handle_get_images_empty_on_plain_text(monkeypatch):
+    async def fake_run(action, *args, **kwargs):
+        return "Content-Type: text/plain; charset=utf-8\r\n\r\nno images here\r\n"
+
+    monkeypatch.setattr(mail, "_run_script", fake_run)
+    result = asyncio.run(mail.handle(
+        "mail_get_images", {"message_id": "m-2"}))
+    payload = json.loads(result[0].text)
+    assert payload["total"] == 0
+    assert payload["images"] == []

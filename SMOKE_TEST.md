@@ -1,7 +1,7 @@
 # macos-apps-mcp smoke test
 
-Canonical, versioned manual test plan for all **23 tools** (Reminders 7 · Notes 7 ·
-Mail 9). Run it through the MCP client (e.g. Claude Desktop) after any change to the
+Canonical, versioned manual test plan for all **24 tools** (Reminders 7 · Notes 7 ·
+Mail 10). Run it through the MCP client (e.g. Claude Desktop) after any change to the
 tools or their AppleScript. Keep this file in sync with the tool surface — when a tool
 is added or removed, update the steps and the count here in the same change, so the plan
 never drifts (that drift is why earlier runs needed ad-hoc `step 21'` patches).
@@ -73,7 +73,7 @@ that is just the scratch reminder.
 
 ---
 
-## Mail — steps 15–23
+## Mail — steps 15–24
 
 | # | Tool | Action | Pass criteria |
 |---|---|---|---|
@@ -86,6 +86,7 @@ that is just the scratch reminder.
 | 21 | `mail_move` | Move the disposable target message **into `iCloud/MCP Test Run <N>`** (created in step 20). | Counts change correctly: destination 0 → 1, inbox −1. |
 | 22 | `mail_delete` | Delete (Trash) the disposable target. | Destination back to 0; message located in Trash (e.g. via `mail_search`), recoverable. |
 | 23 | `mail_rename_mailbox` | Rename `iCloud/MCP Test Run <N>` → `DELETE ME - MCP Test Run <N>`. Also test a `new_name` containing `/` (rejected) and a non-existent source (rejected). | Returns the new account-qualified path; the whole subtree re-parents and is still addressable at the new path. `/` in `new_name` and a missing source are both rejected with clear messages. |
+| 24 | `mail_get_images` | On an **HTML** message with linked images (e.g. a newsletter / Patreon post), extract its images. Then try a plain-text-only message. | Returns `{status, message_id, total, tracker_count, images}`; each image has `url`, `alt`, integer-or-null `width`/`height`, and `likely_tracker`. Real content images are `likely_tracker:false`; 1x1 pixels flagged `true`. Plain-text-only message returns `total:0` with an empty `images` array. **Non-mutating** — read state unchanged. The server returns URLs only (it does **not** fetch remote content). |
 
 ---
 
@@ -138,6 +139,7 @@ Result: <P> PASS / <F> FAIL
 | 21 | mail_move | | |
 | 22 | mail_delete | | |
 | 23 | mail_rename_mailbox | | |
+| 24 | mail_get_images | | |
 ```
 
 ## Post-run cleanup checklist
