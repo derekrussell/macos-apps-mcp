@@ -8,6 +8,7 @@ in Apple Mail via AppleScript:
   mail_count_messages  — Count messages in a mailbox
   mail_list_mailboxes  — List all mailboxes with their message counts
   mail_get_body        — Fetch the full plain-text body of a message
+  mail_get_images      — Fetch the full plain-text body of a message
   mail_move            — Move a message to another mailbox
   mail_delete          — Move a message to the Trash
   mail_rename_mailbox  — Rename a mailbox (deletion isn't scriptable in Mail)
@@ -27,6 +28,9 @@ Note:
     shortcut for the unified inbox.
 """
 
+import email
+import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
@@ -214,6 +218,32 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="mail_get_images",
+        description=(
+            "Extract the images reference in an Apple Mail message's HTML body. "
+            "mail_get_body returns only Mail's plain-text rendering, which drops "
+            "linked <img> images (e.g. newsletter or Patreon artwork); this reads "
+            "the message's raw MIM source and returns the image URLs so the "
+            "client can fetch or view them. Searches all mailboxes for the "
+            "message. Returns a JSON object {status, message_id, total, "
+            "tracker_count, images}, where each image has url, alt, width, height "
+            "(width/height are integers or null), and likely_tracker (true for "
+            "probable 1x1 tracking pixels / beacons). The server extracts URLs "
+            "only — it does NOT fetch remote content. Use the id from "
+            "mail_get_message or mail_search as message_id."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "RFC 2822 Message-ID of the message to extract images from."
+                },
+            },
+            "required": ["message_id"],
+        },
+    ),
+    Tool(
         name="mail_move",
         description=(
             "Move an Apple Mail message to another mailbox. "
@@ -387,9 +417,134 @@ def _parse_mailbox_line(line: str) -> dict | None:
     return {"path": path, "count": int(count_text)}
 
 
+def _extract_html_parts(source: str) -> list[str]:
+    """Return the decoded text/html parts of a raw RFC-822/MIME message.
+
+    Uses the stdlib email parser (no new dependency). Each text/html part is
+    decoded from its transfer-encoding (quoted-printable / base64) and its
+    declared charset; a missing or unknown charset falls back to UTF-8. Returns
+    an empty list for a message with no HTML part (e.g. plain-text-only mail).
+    """
+    message = email.message_from_string(source)
+    html_parts: list[str] = []
+    for part in message.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is None:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            html_parts.append(payload.decode(charset, errors="replace"))
+        except LookupError:
+            html_parts.append(payload.decode("utf-8", errors="replace"))
+    return html_parts
+
+
+class _ImageTagCollector(HTMLParser):
+    """Collect the attributes of every <img> tag encountered in an HTML body."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.images: list[dict] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() == "img":
+            # A later duplicate attribute wins, matching browser behaviour.
+            self.images.append(
+                {name.lower(): (value or "") for name, value in attrs}
+            )
+
+
+def _parse_dimension(value: str) -> int | None:
+    """Parse an <img> width/height attribute to an int, or None if not
+    numeric.
+
+    Handles a bare number ("600") and a trailing-unit form ("600px"); a
+    percentage or other non-integer value (e.g. "100%) yields None.
+    """
+    match = re.match(r"\s*(\d+)\s*(?:px)?\s*$", value, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+# High-confidence substrings that mark a URL as an open-tracking pixel rather
+# than real content. Kept deliberately small to avoid false positives on legit
+# CDN paths (a bare "track" substring is intentionally NOT included).
+_TRACKER_URL_MARKERS = ("/wf/open", "/open?",
+                        "pixel", "beacon", "spacer.gif")
+
+
+def _looks_like_tracker(url: str, width: int | None, height: int | None) -> bool:
+    """Heuristically flag a likely tracking pixel.
+
+    Two signals, either sufficient:
+        * Tiny declared dimensions — a 1x1 (or 0-sized) image is a spacer/beacon,
+          never real content.
+        * A URL containing a high-confidence tracking marker.
+    """
+    if (width is not None and width <= 1) or (height is not None and height <= 1):
+        return True
+    lowered = url.lower()
+    return any(marker in lowered for marker in _TRACKER_URL_MARKERS)
+
+
+def _build_image(attrs: dict) -> dict | None:
+    """Turn one <img>'s attributes into an image record, or None to skip it.
+
+    Only remotely-fetchable images are surfaced: an http(s) or protocol-relative
+    ("//") src. Inline "data:" URIs (bytes already present) and "cid:" part
+    references (attachment bytes, out of scope for this tool) are skipped, as is
+    an <img> with no src. `alt` whitespace is collapsed — the JSON output already
+    escapes safely, so this just tidies free text (the Python analog of the wire
+    format's sanitise_field).
+    """
+    src = attrs.get("src", "").strip()
+    if not src:
+        return None
+    lowered = src.lower()
+    if not (
+        lowered.startswith("http://")
+        or lowered.startswith("https://")
+        or src.startswith("//")
+    ):
+        return None
+    width = _parse_dimension(attrs.get("width", ""))
+    height = _parse_dimension(attrs.get("height", ""))
+    alt = " ".join(attrs.get("alt", "").split())
+    return {
+        "url": src,
+        "alt": alt,
+        "width": width,
+        "height": height,
+        "likely_tracker": _looks_like_tracker(src, width, height),
+    }
+
+
+def _extract_images(source: str) -> list[dict]:
+    """Extract the linked images referenced by a message's HTML body.
+
+    Parses every text/html part, collects <img> tags, and builds one record per
+    remotely-fetchable image. Duplicate URLs are collapsed (keeping the first
+    occurrence), so a logo repeated throughout a newsletter appears once.
+    """
+    images: list[dict] = []
+    seen_urls: set[str] = set()
+    for html in _extract_html_parts(source):
+        collector = _ImageTagCollector()
+        collector.feed(html)
+        for attrs in collector.images:
+            image = _build_image(attrs)
+            if image is None or image["url"] in seen_urls:
+                continue
+            seen_urls.add(image["url"])
+            images.append(image)
+    return images
+
+
 # ------------------------------------------------------------
 # Section E — Per-tool handlers
 # ------------------------------------------------------------
+
 
 async def _handle_get_messages(arguments: dict) -> list[TextContent]:
     count = int(arguments.get("count", 50))
@@ -476,6 +631,19 @@ async def _handle_get_body(arguments: dict) -> list[TextContent]:
     return text_content(body)
 
 
+async def _handle_get_images(arguments: dict) -> list[TextContent]:
+    message_id = arguments["message_id"]
+    source = await _run_script("get_source", message_id)
+    images = _extract_images(source)
+    return json_content({
+        "status": "ok",
+        "message_id": message_id,
+        "total": len(images),
+        "tracker_count": sum(1 for image in images if image["likely_tracker"]),
+        "images": images,
+    })
+
+
 async def _handle_move(arguments: dict) -> list[TextContent]:
     message_id = arguments["message_id"]
     mailbox = arguments["mailbox"]
@@ -518,6 +686,7 @@ _TOOL_HANDLERS = {
     "mail_count_messages": _handle_count_messages,
     "mail_list_mailboxes": _handle_list_mailboxes,
     "mail_get_body": _handle_get_body,
+    "mail_get_images": _handle_get_images,
     "mail_move": _handle_move,
     "mail_delete": _handle_delete,
     "mail_rename_mailbox": _handle_rename_mailbox,

@@ -12,6 +12,7 @@
 --                                                  -> total\nmsg_id|subject|sender|date|is_read\n...
 --   list_mailboxes                                 -> path|count\n...
 --   get_body        <message_id>                   -> plain-text body
+--   get_source      <message_id>                   -> raw RFC-822/MIME source
 --   move            <message_id> <mailbox>         -> (no output)
 --   delete          <message_id>                   -> (no output)
 --   rename_mailbox  <mailbox> <new_name>           -> new account-qualified path
@@ -50,6 +51,8 @@ on run argv
         return list_mailboxes()
     else if action is "get_body" then
         return get_body(item 2 of argv)
+    else if action is "get_source" then
+        return get_source(item 2 of argv)
     else if action is "move" then
         move_message(item 2 of argv, item 3 of argv)
     else if action is "delete" then
@@ -330,6 +333,19 @@ on get_body(messageId)
         return content of targetMessage
     end tell
 end get_body
+
+
+-- Return the raw RFC-822/MIME source of the message with the given Message-ID.
+-- Unlike `content` (Mail's plain-text rendering), `source` preserves the full
+-- MIME structure including the text/html part, so the caller can parse out the
+-- linked <img> URLs in Python. The whole result is the blob (not pipe records),
+-- so it is returned as-is; the message must be downloaded and source can be large.
+on get_source(messageId)
+    set targetMessage to find_message(messageId)
+    tell application "Mail"
+        return source of targetMessage
+    end tell
+end get_source
 
 
 -- Move the message with the given Message-ID to the named mailbox.
