@@ -192,6 +192,75 @@ def test_handle_search_reports_warming_when_index_not_built(monkeypatch):
     assert refresh_calls  # a background build was triggered
 
 
+def test_handle_search_notes_ok_forwards_budget_and_timeout(monkeypatch):
+    captured = {}
+
+    async def fake_run(action, *args, **kwargs):
+        captured["action"] = action
+        captured["args"] = args
+        captured["timeout"] = kwargs.get("timeout")
+        # First line is the status; then one record.
+        return "ok\n1|Buy milk|2026-01-01T09:00:00|call the shop|false|Shopping"
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_search", {"query": "shop", "search_notes": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    # search <query> <include_completed> <search_notes> <time_budget>
+    assert captured["action"] == "search"
+    assert captured["args"] == (
+        "shop", "false", "true", str(reminders._NOTES_SCAN_BUDGET_SECONDS)
+    )
+    # The osascript timeout must exceed the internal budget so the cooperative
+    # abort fires before a hard kill.
+    assert captured["timeout"] == (
+        reminders._NOTES_SCAN_BUDGET_SECONDS
+        + reminders._NOTES_SCAN_TIMEOUT_MARGIN_SECONDS
+    )
+    assert captured["timeout"] > reminders._NOTES_SCAN_BUDGET_SECONDS
+
+    assert payload["status"] == "ok"
+    assert payload["total"] == 1
+    assert payload["reminders"][0]["id"] == "1"
+    assert payload["reminders"][0]["notes"] == "call the shop"  # notes populated
+    assert "message" not in payload
+
+
+def test_handle_search_notes_timeout_returns_partial_with_message(monkeypatch):
+    async def fake_run(action, *args, **kwargs):
+        # Budget hit: status "timeout" with the one match found so far.
+        return "timeout\n7|Book flights|2026-02-02T00:00:00||false|Travel"
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_search", {"query": "book", "search_notes": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    assert payload["status"] == "timeout"
+    assert payload["total"] == 1  # the partial match is still returned
+    assert payload["reminders"][0]["id"] == "7"
+    assert "partial results" in payload["message"]
+
+
+def test_handle_search_notes_empty_result_is_ok(monkeypatch):
+    async def fake_run(action, *args, **kwargs):
+        return "ok"  # status only, no matches
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_search", {"query": "nothing", "search_notes": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    assert payload["status"] == "ok"
+    assert payload["total"] == 0
+    assert payload["reminders"] == []
+    assert "message" not in payload
+
+
 def test_handle_create_returns_id_and_seeds_index_with_resolved_list(monkeypatch):
     async def fake_run(action, *args, **kwargs):
         assert action == "create"
