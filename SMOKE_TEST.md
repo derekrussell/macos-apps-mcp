@@ -7,7 +7,7 @@ is added or removed, update the steps and the count here in the same change, so 
 never drifts (that drift is why earlier runs needed ad-hoc `step 21'` patches).
 
 Record the report as `macos-apps-mcp-smoke-test-run<N>-<YYYY-MM-DD>.md`. The archive so far
-lives in `~/Desktop/apple_mcp/`; if the client running the tests can't write there (that
+lives in `~/Desktop/macos_apps_mcp/`; if the client running the tests can't write there (that
 folder isn't connected to its session), save it somewhere it can and move it afterward.
 
 ## Prerequisites
