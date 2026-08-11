@@ -148,6 +148,30 @@ on format_reminder(reminderProperties, listName)
 end format_reminder
 
 
+-- Format a reminder record as an index line: id|title|list|due_date|is_completed
+-- (no notes; the index does not carry them).
+-- Every field is read from ONE local properties record, fetched in bulk by the
+-- caller, so all fields are guaranteed to belong to the SAME reminder. This is
+-- why build_index must not join parallel `due date of reminders` / `completed of
+-- reminders` lists positionally: those are separate Apple events that Reminders
+-- can return in different orders (completed items re-sort), which silently
+-- misaligns due dates against ids. See issue #13.
+on format_index_line(reminderProperties, listName)
+    tell application "Reminders"
+        set reminderId to id of reminderProperties
+        set reminderName to name of reminderProperties
+        set reminderDueDate to due date of reminderProperties
+        set reminderIsCompleted to completed of reminderProperties
+    end tell
+
+    set titleField to util's sanitise_field(reminderName)
+    set dueDateField to my format_due_date(reminderDueDate)
+    set completedField to my boolean_to_text(reminderIsCompleted)
+
+    return (reminderId as text) & "|" & titleField & "|" & listName & "|" & dueDateField & "|" & completedField & linefeed
+end format_index_line
+
+
 -- Public handlers
 -- ------------------------------------------------------------
 
@@ -285,10 +309,15 @@ end search_reminders
 -- side to hold in memory. Output is pipe-delimited:
 --   id|title|list|due_date|is_completed
 --
--- Reads each field in bulk per list (id, name, due date, completed) - a handful
--- of Apple events per list rather than one per reminder. Notes are deliberately
--- excluded: reading every body is what pushes a full scan past the client
--- timeout, and this runs in the background where cost affects only freshness.
+-- Fetches `properties of (reminders of currentList)` ONCE per list (a single
+-- Apple event) and reads every field from each atomic per-reminder record via
+-- format_index_line - the same approach get_reminders uses. This is deliberate:
+-- reading id/name/due date/completed as four SEPARATE bulk `... of reminders`
+-- events and joining them positionally silently misaligned due dates against ids
+-- (Reminders can return those events in different orders once completed items
+-- re-sort), which is the issue #13 regression. An atomic record per reminder
+-- cannot misalign. Notes ARE included in the record but simply not emitted; this
+-- runs in the background where cost affects only freshness, not a user timeout.
 on build_index()
     tell application "Reminders"
         set allLists to every list
@@ -298,17 +327,11 @@ on build_index()
     repeat with currentList in allLists
         tell application "Reminders"
             set currentListName to name of currentList
-            set idList to id of reminders of currentList
-            set titleList to name of reminders of currentList
-            set dueDateList to due date of reminders of currentList
-            set completedList to completed of reminders of currentList
+            set allReminderProperties to properties of (reminders of currentList)
         end tell
 
-        repeat with reminderIndex from 1 to count of idList
-            set dueDateField to my format_due_date(item reminderIndex of dueDateList)
-            set completedField to my boolean_to_text(item reminderIndex of completedList)
-            set titleField to util's sanitise_field(item reminderIndex of titleList)
-            set output to output & (item reminderIndex of idList) & "|" & titleField & "|" & currentListName & "|" & dueDateField & "|" & completedField & linefeed
+        repeat with reminderProperties in allReminderProperties
+            set output to output & (my format_index_line(contents of reminderProperties, currentListName))
         end repeat
     end repeat
     return output
