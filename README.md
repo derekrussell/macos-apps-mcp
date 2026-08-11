@@ -42,11 +42,11 @@ AppleScript is both the design choice and the hard boundary — it's why some
 operations are possible and others simply aren't (see
 [Known limitations](#known-limitations)).
 
-## Tools (23)
+## Tools (24)
 
 | Domain | Tools |
 | --- | --- |
-| **Mail** (9) | `mail_get_messages` · `mail_search` · `mail_count_messages` · `mail_list_mailboxes` · `mail_get_body` · `mail_move` · `mail_delete` · `mail_rename_mailbox` · `mail_create_mailbox` |
+| **Mail** (10) | `mail_get_messages` · `mail_search` · `mail_count_messages` · `mail_list_mailboxes` · `mail_get_body` · `mail_get_images` · `mail_move` · `mail_delete` · `mail_rename_mailbox` · `mail_create_mailbox` |
 | **Reminders** (7) | `reminder_list_lists` · `reminder_get` · `reminder_search` · `reminder_create` · `reminder_complete` · `reminder_update` · `reminder_delete` |
 | **Notes** (7) | `notes_list_folders` · `notes_get` · `notes_search` · `notes_create` · `notes_delete` · `notes_update` · `notes_append` |
 
