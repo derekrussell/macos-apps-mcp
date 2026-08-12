@@ -53,6 +53,16 @@ _INDEX_TTL_SECONDS = 90.0
 # slow scan only delays freshness rather than causing a user-facing timeout.
 _INDEX_BUILD_TIMEOUT_SECONDS = 240.0
 
+# Internal time budget (seconds) handed to the AppleScript search_notes scan. The
+# script checks it between chunks and stops COOPERATIVELY once exceeded, returning
+# partial results with a "timeout" status — a full/hard-killed live scan wedges
+# EventKit and stalls every later Reminders call (see issue #17).
+_NOTES_SCAN_BUDGET_SECONDS = 40
+# Extra wall-clock granted to the osascript call beyond the internal budget, so
+# the script's own cooperative abort fires before run_osascript hard-kills it (a
+# hard kill can't interrupt an in-flight Apple event, which is what wedges).
+_NOTES_SCAN_TIMEOUT_MARGIN_SECONDS = 15
+
 # ------------------------------------------------------------
 # Section B — Tool definitions
 # ------------------------------------------------------------
@@ -129,8 +139,12 @@ TOOLS: list[Tool] = [
             "status is usually 'ok'; on a cold start it may be 'warming' with an "
             "empty reminders array — simply retry after a few seconds. "
             "Note: search_notes runs a live full-text scan that is significantly "
-            "slower on large accounts and may time out; leave it off unless you "
-            "specifically need to match note text (it does populate notes)."
+            "slower on large accounts; leave it off unless you specifically need "
+            "to match note text (it does populate notes). It is bounded by an "
+            "internal time budget — if it can't finish in time it returns the "
+            "matches found so far with status 'timeout' (partial results) plus a "
+            "message, rather than hanging; narrow the query and retry, or page "
+            "with reminder_get."
         ),
         inputSchema={
             "type": "object",
@@ -588,20 +602,34 @@ async def _handle_get(arguments: dict) -> list[TextContent]:
 
 async def _search_reminder_notes_live(
     query: str, include_completed: bool
-) -> list[dict]:
+) -> tuple[str, list[dict]]:
     """Run the opt-in live full-text scan (matches notes as well as titles).
 
     Reads every reminder's body via AppleScript, so it is slow on large accounts
     and is not served from the index. Populates the notes field.
+
+    The scan is bounded by an internal time budget: its first output line is a
+    status ("ok" if it finished, "timeout" if it hit the budget and returned
+    partial results), and the remaining lines are reminder records. Returns a
+    (status, reminders) tuple. The osascript timeout is set above the budget so
+    the script aborts cooperatively before it can be hard-killed mid-scan.
     """
     raw = await _run_script(
-        "search", query, str(include_completed).lower(), "true"
+        "search",
+        query,
+        str(include_completed).lower(),
+        "true",
+        str(_NOTES_SCAN_BUDGET_SECONDS),
+        timeout=_NOTES_SCAN_BUDGET_SECONDS + _NOTES_SCAN_TIMEOUT_MARGIN_SECONDS,
     )
-    return [
+    lines = raw.splitlines() if raw else []
+    status = lines[0] if lines else "ok"
+    reminders = [
         parsed for parsed in
-        (_parse_reminder(line) for line in raw.splitlines())
+        (_parse_reminder(line) for line in lines[1:])
         if parsed is not None
     ]
+    return status, reminders
 
 
 def _warming_search_response(offset: int) -> dict:
@@ -624,8 +652,11 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
     count = int(arguments.get("count", 50))
     offset = int(arguments.get("offset", 0))
 
+    status = "ok"
     if search_notes:
-        matches = await _search_reminder_notes_live(query, include_completed)
+        # Opt-in live scan: it self-bounds and reports "ok" or "timeout" (partial
+        # results) so it can't wedge EventKit by running/being killed to the end.
+        status, matches = await _search_reminder_notes_live(query, include_completed)
     elif not _search_index.is_built:
         # Cold start: trigger a build and ask the caller to retry rather than
         # blocking on a scan that could exceed the client timeout. Startup
@@ -640,14 +671,21 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
         matches = _search_index.search(query, include_completed)
 
     page, total, has_more = paginate(matches, offset, count)
-    return json_content({
-        "status": "ok",
+    response = {
+        "status": status,
         "total": total,
         "offset": offset,
         "returned": len(page),
         "has_more": has_more,
         "reminders": page,
-    })
+    }
+    if status == "timeout":
+        # Partial results: the note scan hit its time budget before finishing.
+        response["message"] = (
+            "Note search reached its time budget and returned partial results. "
+            "Narrow the query, or use reminder_get to read a specific list."
+        )
+    return json_content(response)
 
 
 async def _handle_create(arguments: dict) -> list[TextContent]:

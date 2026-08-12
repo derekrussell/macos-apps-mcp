@@ -47,7 +47,7 @@ folder isn't connected to its session), save it somewhere it can and move it aft
 | 1 | `reminder_list_lists` | List all lists. | Each list has a name and integer count. Note the count of a chosen target list. |
 | 2 | `reminder_create` | Create `MCP-SMOKE-<tag>` in a known list with a due date and notes. | Returns a reminder id; no duplicate created. |
 | 3 | `reminder_get` | Fetch that list with `include_completed: true`. | The scratch reminder appears with correct title, ISO `due_date`, `notes`, `is_completed:false`, and the resolved `list` name (not `"default"`). |
-| 4 | `reminder_search` | Search `MCP-SMOKE` (title). Then a broad term with a small `count`. Then a broad term with `include_completed:true`. Then the same term with `search_notes:true`. | Envelope shape correct; the scratch is found. Broad term paginates (`has_more:true`, `offset` advances). A cold first call may return `status:"warming"` with an empty array — retry after a few seconds. Default search returns `notes:null`; `search_notes:true` populates notes (may be slower). **`due_date` alignment (guards issue #13):** with `include_completed:true`, spot-check that each returned `due_date` matches `reminder_get` for the *same* reminder id — a shifted/wrapped date means the index join is misaligned again. |
+| 4 | `reminder_search` | Search `MCP-SMOKE` (title). Then a broad term with a small `count`. Then a broad term with `include_completed:true`. Then the same term with `search_notes:true`. | Envelope shape correct; the scratch is found. Broad term paginates (`has_more:true`, `offset` advances). A cold first call may return `status:"warming"` with an empty array — retry after a few seconds. Default search returns `notes:null`; `search_notes:true` populates notes (may be slower). **`search_notes` must not hang or wedge (guards issue #17):** it returns a `status:"ok"` or `status:"timeout"` envelope (the latter with partial results + a `message`), **not** a client timeout — and the reminder calls that follow it (e.g. `reminder_get`) stay responsive rather than stalling for minutes. **`due_date` alignment (guards issue #13):** with `include_completed:true`, spot-check that each returned `due_date` matches `reminder_get` for the *same* reminder id — a shifted/wrapped date means the index join is misaligned again. |
 | 5 | `reminder_update` | Update the scratch's title and notes. | Returns promptly (no timeout); a follow-up `reminder_get` shows both applied. |
 | 6 | `reminder_complete` | Complete the scratch. | Marked completed; visible only with `include_completed:true`. |
 | 7 | `reminder_delete` | Delete the scratch. | Gone. A `reminder_list_lists` now matches the step-1 count for that list (see count note below). |
@@ -98,9 +98,11 @@ that is just the scratch reminder.
   why step 23 flags the created mailbox rather than deleting it.
 - **`reminder_search` cold start** may return `status:"warming"` with an empty array —
   retry shortly (the index builds in the background).
-- **`reminder_search` default is title-only** and returns `notes:null`; `search_notes`
-  and **`mail_search` `body`** are live scans that are slower and can time out on large
-  accounts.
+- **`reminder_search` default is title-only** and returns `notes:null`. `search_notes`
+  is a live scan that is slower on large accounts, but it is now **time-budgeted**: it
+  returns partial results with `status:"timeout"` rather than hanging or wedging EventKit
+  (issue #17). **`mail_search` `body`** is still an unbounded live scan that can time out
+  on large mailboxes.
 - **`mail_get_messages` order** is Mail's native received-date order, not strictly the
   reported sent date; use `mail_search` with `since`/`until` for date-precise selection.
 - **Notes "Recently Deleted"** only appears when it contains notes.

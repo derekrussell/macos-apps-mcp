@@ -8,8 +8,9 @@
 --   list_lists                                         -> name|count\n...
 --   get_reminders  <list> <count> <offset> <include_completed>
 --                                                      -> total\nid|title|due_date|notes|is_completed|list\n...
---   search         <query> <include_completed> <search_notes>
---                                                      -> id|title|due_date|notes|is_completed|list\n...
+--   search         <query> <include_completed> <search_notes> <time_budget>
+--                                                      -> status\nid|title|due_date|notes|is_completed|list\n...
+--                                                         (status = "ok" | "timeout"; time_budget in seconds)
 --   build_index                                        -> id|title|list|due_date|is_completed\n...   (all lists)
 --   create         <title> <list> <due_date> <notes>   -> reminder_id|resolved_list
 --   complete       <reminder_id>                       -> (no output)
@@ -42,7 +43,8 @@ on run argv
         set searchQuery to item 2 of argv
         set includeCompleted to item 3 of argv
         set searchNotes to item 4 of argv
-        return search_reminders(searchQuery, includeCompleted, searchNotes)
+        set timeBudget to (item 5 of argv) as integer
+        return search_reminders(searchQuery, includeCompleted, searchNotes, timeBudget)
     else if action is "build_index" then
         return build_index()
     else if action is "create" then
@@ -237,72 +239,112 @@ on get_reminders(listName, batchCount, batchOffset, includeCompleted)
 end get_reminders
 
 
--- Search for reminders by text across all lists.
--- Output is pipe-delimited: id|title|due_date|notes|is_completed|list
+-- Number of reminders whose properties are read in one Apple event by
+-- search_reminders. Small on purpose: it caps the size of any single
+-- (uninterruptible) event and makes the time-budget check below fine-grained.
+property searchChunkSize : 25
+
+
+-- Search for reminders by text across all lists, bounded by a time budget.
+-- Output: a status line ("ok" | "timeout") followed by matching records
+--   id|title|due_date|notes|is_completed|list
 --
--- Fetching full `properties of (reminders of lst)` for every list serialises
--- 15+ fields per reminder and times out on large lists. Reading only the fields
--- needed to MATCH in bulk per list, then the heavy output fields for the few
--- matches, is much cheaper (matches addressed positionally, since the bulk field
--- order aligns with `reminder i of`).
+-- This is the OPT-IN live full-text scan (search_notes). A full body scan of a
+-- large account is expensive and, run to completion or hard-killed mid-event,
+-- wedges EventKit so that even simple reads stall for minutes (see CLAUDE.md and
+-- issue #17). A hard timeout can't help: an osascript blocked inside an Apple
+-- event ignores SIGKILL until that event returns. So this scan bounds ITSELF:
 --
--- The dominant cost is `body of reminders of lst`: on a 1200-reminder account a
--- name+body read costs ~64s (over the client timeout) versus ~24s for names
--- alone. So notes matching is OPT-IN (searchNotes is "true"); by default we read
--- names only. Either way the matched output line still includes the notes field,
--- read per-match, which is cheap because matches are few.
-on search_reminders(searchQuery, includeCompleted, searchNotes)
+--   * It reads `properties of (reminders i thru j of list)` in small CHUNKS.
+--     One atomic record per reminder means every output field is read from the
+--     same record (no parallel-array positional join, which is what misaligned
+--     due dates in issue #13), and a small chunk keeps each Apple event short.
+--   * Between chunks it checks an elapsed-time budget and, once exceeded, stops
+--     and returns a "timeout" status with whatever it found so far — a
+--     cooperative abort at a statement boundary, never a mid-event kill.
+--
+-- The caller sets the osascript timeout ABOVE this budget so this abort fires
+-- first. `body` is read whether or not searchNotes is "true" (it rides along in
+-- the properties record for free); searchNotes only controls whether body TEXT
+-- is consulted for matching.
+on search_reminders(searchQuery, includeCompleted, searchNotes, timeBudget)
     tell application "Reminders"
         set allLists to every list
     end tell
 
+    set scanStart to current date
+    set truncated to false
     set output to ""
+
     repeat with currentList in allLists
         tell application "Reminders"
             set currentListName to name of currentList
-            set titleList to name of reminders of currentList
-            if searchNotes is "true" then
-                set noteList to body of reminders of currentList
-            else
-                set noteList to {}
-            end if
+            set listReminderCount to count of reminders of currentList
         end tell
 
-        set reminderCount to count of titleList
-        repeat with reminderIndex from 1 to reminderCount
-            set reminderTitle to item reminderIndex of titleList
-
-            set isMatch to false
-            ignoring case
-                if reminderTitle contains searchQuery then
-                    set isMatch to true
-                else if searchNotes is "true" then
-                    set noteText to item reminderIndex of noteList
-                    if (noteText is not missing value) and (noteText contains searchQuery) then set isMatch to true
-                end if
-            end ignoring
-
-            if isMatch then
-                -- Read the remaining fields (including notes) for this match only.
-                tell application "Reminders"
-                    set matchedReminder to reminder reminderIndex of currentList
-                    set reminderId to id of matchedReminder
-                    set reminderIsCompleted to completed of matchedReminder
-                    set reminderDueDate to due date of matchedReminder
-                    set reminderBody to body of matchedReminder
-                end tell
-                if reminderBody is missing value then set reminderBody to ""
-
-                if (includeCompleted is "true") or (not reminderIsCompleted) then
-                    set dueDateField to my format_due_date(reminderDueDate)
-                    set completedField to my boolean_to_text(reminderIsCompleted)
-                    set output to output & (reminderId as text) & "|" & (util's sanitise_field(reminderTitle)) & "|" & dueDateField & "|" & (util's sanitise_field(reminderBody)) & "|" & completedField & "|" & currentListName & linefeed
-                end if
+        set chunkStart to 1
+        repeat while chunkStart ≤ listReminderCount
+            if ((current date) - scanStart) ≥ timeBudget then
+                set truncated to true
+                exit repeat
             end if
+
+            set chunkEnd to chunkStart + searchChunkSize - 1
+            if chunkEnd > listReminderCount then set chunkEnd to listReminderCount
+
+            tell application "Reminders"
+                set chunkProperties to properties of (reminders chunkStart thru chunkEnd of currentList)
+            end tell
+
+            repeat with reminderProperties in chunkProperties
+                set output to output & my match_and_format(contents of reminderProperties, currentListName, searchQuery, includeCompleted, searchNotes)
+            end repeat
+
+            set chunkStart to chunkEnd + 1
         end repeat
+
+        if truncated then exit repeat
     end repeat
-    return output
+
+    if truncated then
+        return "timeout" & linefeed & output
+    else
+        return "ok" & linefeed & output
+    end if
 end search_reminders
+
+
+-- Test one reminder record against the query and, if it matches (and passes the
+-- completed filter), return its formatted line; otherwise return "".
+-- Reads every field from the single local properties record, so the emitted
+-- fields all belong to the same reminder. Title is always matched; body text is
+-- matched only when searchNotes is "true".
+on match_and_format(reminderProperties, listName, searchQuery, includeCompleted, searchNotes)
+    tell application "Reminders"
+        set reminderName to name of reminderProperties
+        set reminderBody to body of reminderProperties
+        set reminderIsCompleted to completed of reminderProperties
+        set reminderId to id of reminderProperties
+        set reminderDueDate to due date of reminderProperties
+    end tell
+
+    if (includeCompleted is not "true") and reminderIsCompleted then return ""
+    if reminderBody is missing value then set reminderBody to ""
+
+    set isMatch to false
+    ignoring case
+        if reminderName contains searchQuery then
+            set isMatch to true
+        else if (searchNotes is "true") and (reminderBody contains searchQuery) then
+            set isMatch to true
+        end if
+    end ignoring
+    if not isMatch then return ""
+
+    set dueDateField to my format_due_date(reminderDueDate)
+    set completedField to my boolean_to_text(reminderIsCompleted)
+    return (reminderId as text) & "|" & (util's sanitise_field(reminderName)) & "|" & dueDateField & "|" & (util's sanitise_field(reminderBody)) & "|" & completedField & "|" & listName & linefeed
+end match_and_format
 
 
 -- Build the search index of every reminder across all lists, for the Python
