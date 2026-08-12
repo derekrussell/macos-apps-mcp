@@ -44,14 +44,15 @@ config.py                  (empty)
   `util's format_date(...)`. Inside a `tell application` block these need
   `my (util's ...)`.
 
-## Tools (24)
+## Tools (25)
 
 **Mail (10):** `mail_get_messages` · `mail_search` · `mail_count_messages` ·
 `mail_list_mailboxes` · `mail_get_body` · `mail_get_images` · `mail_move` ·
 `mail_delete` · `mail_rename_mailbox` · `mail_create_mailbox`
 
-**Reminders (7):** `reminder_list_lists` · `reminder_get` · `reminder_search` ·
-`reminder_create` · `reminder_complete` · `reminder_update` · `reminder_delete`
+**Reminders (8):** `reminder_list_lists` · `reminder_completed_stats` ·
+`reminder_get` · `reminder_search` · `reminder_create` · `reminder_complete` ·
+`reminder_update` · `reminder_delete`
 
 **Notes (7):** `notes_list_folders` · `notes_get` · `notes_search` · `notes_create` ·
 `notes_delete` · `notes_update` · `notes_append`
@@ -145,7 +146,7 @@ EventKit** (see gotchas). Instead:
 - **AppleScript parse check:** `osascript scripts/<domain>.applescript` with no args —
   a fast `Can't get item 1 of {}` (-1728) means it compiled (that's the argv access,
   after successful parse).
-- **End-to-end validation** (real Apple apps) is the manual 24-tool sequence in
+- **End-to-end validation** (real Apple apps) is the manual 25-tool sequence in
   `SMOKE_TEST.md` (keep that file in sync when adding/removing a tool); run reports live
   under `~/Desktop/macos_apps_mcp/`. When testing reminder/mail search, prefer a freshly
   restarted machine and avoid rapid repeated Reminders scans.
