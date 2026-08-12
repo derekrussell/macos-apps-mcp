@@ -4,6 +4,7 @@ Exposes seven tools that let the client read, create, update, and delete
 reminders in Apple Reminders via AppleScript:
 
     reminder_list_lists  — List all reminder lists
+    reminder_completed_stats — Per-list completed/incomplete counts (from the index)
     reminder_get         — Fetch reminders from a list, with pagination
     reminder_search      — Search reminders by text across all lists
     reminder_create      — Create a new reminder
@@ -78,6 +79,34 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="reminder_completed_stats",
+        description=(
+            "Report how many completed vs incomplete reminders each Apple "
+            "Reminders list holds — a read-only way to spot lists bloated with "
+            "old completed items (e.g. recurring shopping or chore lists). "
+            "Served instantly from the in-memory search index (no live scan), so "
+            "it is safe to call freely. Returns a JSON object {status, source, "
+            "index_age_seconds, lists, totals}, where lists is an array of "
+            "{list, total, completed, incomplete, completed_pct} sorted with the "
+            "most completed reminders first. Pass list to report a single list; "
+            "omit it (or pass 'all') for every list. Counts reflect the index, "
+            "which may lag a direct edit in the Reminders app by up to ~90s "
+            "(index_age_seconds shows its freshness). On a cold start it may "
+            "return status 'warming' with an empty lists array — retry shortly."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "list": {
+                    "type": "string",
+                    "description": "Name of a single list to report, or 'all' for every list. Defaults to 'all'.",
+                    "default": "all",
+                },
+            },
             "required": [],
         },
     ),
@@ -407,6 +436,11 @@ class ReminderSearchIndex:
         current_time = time.monotonic() if now is None else now
         return (current_time - self._built_at_monotonic) >= ttl_seconds
 
+    def age_seconds(self, now: float | None = None) -> float:
+        """Seconds since the index was last (re)built. ``now`` is injectable."""
+        current_time = time.monotonic() if now is None else now
+        return current_time - self._built_at_monotonic
+
     def replace(
         self,
         reminders,
@@ -520,6 +554,42 @@ class ReminderSearchIndex:
             })
         return results
 
+    def completed_stats(self, list_name: str | None = None) -> list[dict] | None:
+        """Per-list completed/incomplete counts, from the index (no scan).
+
+        Returns None if the index has not been built yet (the caller reports a
+        "warming" status). Otherwise returns one entry per list —
+        {list, total, completed, incomplete, completed_pct} — sorted with the
+        most completed reminders first (most bloated on top). Pass list_name to
+        restrict the report to a single list.
+        """
+        if self._reminders is None:
+            return None
+        counts: dict[str, dict] = {}
+        for reminder in self._reminders:
+            if list_name is not None and reminder.list_name != list_name:
+                continue
+            entry = counts.setdefault(
+                reminder.list_name, {"completed": 0, "incomplete": 0}
+            )
+            if reminder.is_completed:
+                entry["completed"] += 1
+            else:
+                entry["incomplete"] += 1
+        stats = []
+        for name, entry in counts.items():
+            total = entry["completed"] + entry["incomplete"]
+            stats.append({
+                "list": name,
+                "total": total,
+                "completed": entry["completed"],
+                "incomplete": entry["incomplete"],
+                "completed_pct": round(entry["completed"] * 100 / total) if total else 0,
+            })
+        # Most-bloated first; list name breaks ties for a stable order.
+        stats.sort(key=lambda s: (-s["completed"], s["list"]))
+        return stats
+
 
 # The single process-wide index instance and its background-refresh state.
 _search_index = ReminderSearchIndex()
@@ -611,6 +681,39 @@ async def _handle_list_lists(arguments: dict) -> list[TextContent]:
         if parsed is not None
     ]
     return json_content(lists)
+
+
+async def _handle_completed_stats(arguments: dict) -> list[TextContent]:
+    requested_list = arguments.get("list", "all")
+    target_list = None if requested_list in ("all", "", None) else requested_list
+
+    stats = _search_index.completed_stats(target_list)
+    if stats is None:
+        # Cold start: the index isn't built yet. Kick a build and ask to retry,
+        # matching reminder_search's warming contract.
+        _kick_refresh()
+        return json_content({
+            "status": "warming",
+            "source": "index",
+            "lists": [],
+            "totals": {"completed": 0, "incomplete": 0},
+            "message": "Reminder index is building; retry in a few seconds.",
+        })
+
+    # Serve from the index; refresh in the background if stale (never blocks).
+    if _search_index.is_stale(_INDEX_TTL_SECONDS):
+        _kick_refresh()
+
+    return json_content({
+        "status": "ok",
+        "source": "index",
+        "index_age_seconds": round(_search_index.age_seconds()),
+        "lists": stats,
+        "totals": {
+            "completed": sum(entry["completed"] for entry in stats),
+            "incomplete": sum(entry["incomplete"] for entry in stats),
+        },
+    })
 
 
 async def _handle_get(arguments: dict) -> list[TextContent]:
@@ -796,6 +899,7 @@ async def _handle_delete(arguments: dict) -> list[TextContent]:
 
 _TOOL_HANDLERS = {
     "reminder_list_lists": _handle_list_lists,
+    "reminder_completed_stats": _handle_completed_stats,
     "reminder_get": _handle_get,
     "reminder_search": _handle_search,
     "reminder_create": _handle_create,

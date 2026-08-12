@@ -203,6 +203,74 @@ def test_replace_without_guard_is_unconditional():
 
 
 # ---------------------------------------------------------------------------
+# completed_stats (issue #24, Tier 1 — from the index)
+# ---------------------------------------------------------------------------
+
+def test_completed_stats_none_before_build():
+    assert ReminderSearchIndex().completed_stats() is None
+
+
+def test_completed_stats_counts_pct_and_sorts_most_completed_first():
+    index = ReminderSearchIndex()
+    index.replace([
+        IndexedReminder("1", "Buy milk", "Shopping", None, False),
+        IndexedReminder("2", "Old bread", "Shopping", None, True),
+        IndexedReminder("3", "Old eggs", "Shopping", None, True),
+        IndexedReminder("4", "Take bins", "Routines", None, True),
+    ], built_at=1000.0)
+
+    stats = index.completed_stats()
+    # Shopping (2 completed) sorts before Routines (1 completed).
+    assert [s["list"] for s in stats] == ["Shopping", "Routines"]
+    shopping = stats[0]
+    assert shopping == {
+        "list": "Shopping", "total": 3, "completed": 2,
+        "incomplete": 1, "completed_pct": 67,  # round(2/3*100)
+    }
+
+
+def test_completed_stats_filters_to_single_list():
+    index = ReminderSearchIndex()
+    index.replace([
+        IndexedReminder("1", "a", "Shopping", None, True),
+        IndexedReminder("2", "b", "Routines", None, True),
+    ], built_at=1000.0)
+    stats = index.completed_stats("Routines")
+    assert [s["list"] for s in stats] == ["Routines"]
+
+
+def test_handle_completed_stats_builds_envelope(monkeypatch):
+    index = ReminderSearchIndex()
+    index.replace([
+        IndexedReminder("1", "Buy milk", "Shopping", None, False),
+        IndexedReminder("2", "Old eggs", "Shopping", None, True),
+    ], built_at=time.monotonic())
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    result = asyncio.run(reminders.handle("reminder_completed_stats", {}))
+    payload = json.loads(result[0].text)
+
+    assert payload["status"] == "ok"
+    assert payload["source"] == "index"
+    assert payload["lists"][0]["list"] == "Shopping"
+    assert payload["totals"] == {"completed": 1, "incomplete": 1}
+
+
+def test_handle_completed_stats_warming_when_index_not_built(monkeypatch):
+    monkeypatch.setattr(reminders, "_search_index", ReminderSearchIndex())
+    refreshed = []
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: refreshed.append(True))
+
+    result = asyncio.run(reminders.handle("reminder_completed_stats", {}))
+    payload = json.loads(result[0].text)
+
+    assert payload["status"] == "warming"
+    assert payload["lists"] == []
+    assert refreshed  # a background build was kicked
+
+
+# ---------------------------------------------------------------------------
 # handle() dispatch and async handlers (faked _run_script)
 # ---------------------------------------------------------------------------
 
