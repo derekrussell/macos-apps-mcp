@@ -71,4 +71,4 @@ def test_collect_tool_definitions_matches_per_module_counts():
 
     assert len(mail_tools) == 10
     assert len(notes_tools) == 7
-    assert len(reminder_tools) == 7
+    assert len(reminder_tools) == 8
