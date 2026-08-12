@@ -292,6 +292,34 @@ def test_handle_list_lists_parses_output(monkeypatch):
     ]
 
 
+def test_handle_list_lists_retries_once_on_timeout(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_run(action, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("osascript timed out after 60s (action='list_lists').")
+        return "Reminders|21"
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle("reminder_list_lists", {}))
+    assert calls["n"] == 2  # first timed out, retry succeeded
+    assert json.loads(result[0].text) == [{"name": "Reminders", "count": 21}]
+
+
+def test_handle_list_lists_does_not_retry_non_timeout_error(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_run(action, *args, **kwargs):
+        calls["n"] += 1
+        raise RuntimeError("No such list: Groceries")
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    with pytest.raises(RuntimeError, match="No such list"):
+        asyncio.run(reminders.handle("reminder_list_lists", {}))
+    assert calls["n"] == 1  # a genuine error is not retried
+
+
 def test_handle_search_serves_from_index(monkeypatch):
     index = ReminderSearchIndex()
     index.replace([
@@ -334,6 +362,7 @@ def test_handle_search_notes_ok_forwards_budget_and_timeout(monkeypatch):
         return "ok\n1|Buy milk|2026-01-01T09:00:00|call the shop|false|Shopping"
 
     monkeypatch.setattr(reminders, "_run_script", fake_run)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
     result = asyncio.run(reminders.handle(
         "reminder_search", {"query": "shop", "search_notes": True}
     ))
@@ -365,6 +394,7 @@ def test_handle_search_notes_timeout_returns_partial_with_message(monkeypatch):
         return "timeout\n7|Book flights|2026-02-02T00:00:00||false|Travel"
 
     monkeypatch.setattr(reminders, "_run_script", fake_run)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
     result = asyncio.run(reminders.handle(
         "reminder_search", {"query": "book", "search_notes": True}
     ))
@@ -381,6 +411,7 @@ def test_handle_search_notes_empty_result_is_ok(monkeypatch):
         return "ok"  # status only, no matches
 
     monkeypatch.setattr(reminders, "_run_script", fake_run)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
     result = asyncio.run(reminders.handle(
         "reminder_search", {"query": "nothing", "search_notes": True}
     ))
@@ -390,6 +421,76 @@ def test_handle_search_notes_empty_result_is_ok(monkeypatch):
     assert payload["total"] == 0
     assert payload["reminders"] == []
     assert "message" not in payload
+
+
+# ---------------------------------------------------------------------------
+# search_notes seeds from the title index (issue #21)
+# ---------------------------------------------------------------------------
+
+def test_merge_note_matches_unions_and_live_wins():
+    seed = [
+        {"id": "a", "title": "Buy milk", "notes": None, "list": "Shopping"},
+        {"id": "b", "title": "Take bins", "notes": None, "list": "Routines"},
+    ]
+    live = [
+        {"id": "a", "title": "Buy milk", "notes": "at the corner shop", "list": "Shopping"},
+        {"id": "c", "title": "Pay rent", "notes": "milk fund", "list": "Bills"},
+    ]
+    merged = {m["id"]: m for m in reminders._merge_note_matches(seed, live)}
+    assert set(merged) == {"a", "b", "c"}            # union
+    assert merged["a"]["notes"] == "at the corner shop"  # live wins (notes populated)
+    assert merged["b"]["notes"] is None               # seed-only title match kept
+
+
+def test_handle_search_notes_seeds_title_match_the_live_scan_missed(monkeypatch):
+    # The exact run 13/14 defect: a title match in a small list that the budgeted
+    # live scan never reaches. Seeding from the index must still return it.
+    index = ReminderSearchIndex()
+    index.replace(
+        [IndexedReminder("s1", "MCP-SMOKE scratch", "Reminders", None, False)],
+        built_at=time.monotonic(),
+    )
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    async def fake_run(action, *args, **kwargs):
+        return "ok\n"  # live scan finished but matched nothing
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_search", {"query": "MCP-SMOKE", "search_notes": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    assert payload["total"] == 1  # was 0 before #21 — never fewer than default
+    assert payload["reminders"][0]["id"] == "s1"
+
+
+def test_handle_search_notes_live_note_hit_overrides_seed(monkeypatch):
+    index = ReminderSearchIndex()
+    index.replace(
+        [IndexedReminder("x", "Buy milk", "Shopping", None, False)],
+        built_at=time.monotonic(),
+    )
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    async def fake_run(action, *args, **kwargs):
+        # Live scan re-finds x with notes, plus a body-only match y.
+        return (
+            "ok\n"
+            "x|Buy milk|2026-01-01T09:00:00|oat milk|false|Shopping\n"
+            "y|Pay rent|||false|Bills"  # 'milk' only in this reminder's notes
+        )
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_search", {"query": "milk", "search_notes": True}
+    ))
+    by_id = {r["id"]: r for r in json.loads(result[0].text)["reminders"]}
+
+    assert set(by_id) == {"x", "y"}
+    assert by_id["x"]["notes"] == "oat milk"  # live populated notes, not the seed's null
 
 
 def test_handle_create_returns_id_and_seeds_index_with_resolved_list(monkeypatch):

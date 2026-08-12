@@ -169,7 +169,9 @@ TOOLS: list[Tool] = [
             "empty reminders array — simply retry after a few seconds. "
             "Note: search_notes runs a live full-text scan that is significantly "
             "slower on large accounts; leave it off unless you specifically need "
-            "to match note text (it does populate notes). It is bounded by an "
+            "to match note text (it does populate notes). It always includes the "
+            "title matches from the index too, so it never returns fewer results "
+            "than the default search. It is bounded by an "
             "internal time budget — if it can't finish in time it returns the "
             "matches found so far with status 'timeout' (partial results) plus a "
             "message, rather than hanging; narrow the query and retry, or page "
@@ -674,13 +676,29 @@ def warm_index() -> None:
 
 async def _handle_list_lists(arguments: dict) -> list[TextContent]:
     del arguments  # no arguments; the parameter exists for a uniform dispatch signature
-    raw = await _run_script("list_lists")
+    raw = await _list_lists_with_retry()
     lists = [
         parsed for parsed in
         (_parse_list_line(line) for line in raw.splitlines())
         if parsed is not None
     ]
     return json_content(lists)
+
+
+async def _list_lists_with_retry() -> str:
+    """Run the list_lists scan, retrying ONCE on a timeout.
+
+    reminder_list_lists is read-only and idempotent, and intermittently times out
+    on large accounts even though a retry succeeds instantly (#26). A single
+    bounded retry masks that transient blip. Only a timeout is retried — a genuine
+    error (bad permissions, script fault) is re-raised on the first attempt.
+    """
+    try:
+        return await _run_script("list_lists")
+    except RuntimeError as error:
+        if "timed out" not in str(error):
+            raise
+        return await _run_script("list_lists")
 
 
 async def _handle_completed_stats(arguments: dict) -> list[TextContent]:
@@ -748,6 +766,21 @@ async def _handle_get(arguments: dict) -> list[TextContent]:
     })
 
 
+def _merge_note_matches(
+    seed_matches: list[dict], live_matches: list[dict]
+) -> list[dict]:
+    """Union title-index seed matches with live note-scan matches, keyed by id.
+
+    The seed guarantees search_notes returns at least what the default (title)
+    search would; the live matches carry populated notes and any body-only hits,
+    so a live match wins over a seed match that shares its id.
+    """
+    merged = {match["id"]: match for match in seed_matches}
+    for match in live_matches:
+        merged[match["id"]] = match
+    return list(merged.values())
+
+
 async def _search_reminder_notes_live(
     query: str, include_completed: bool
 ) -> tuple[str, list[dict]]:
@@ -802,9 +835,18 @@ async def _handle_search(arguments: dict) -> list[TextContent]:
 
     status = "ok"
     if search_notes:
-        # Opt-in live scan: it self-bounds and reports "ok" or "timeout" (partial
-        # results) so it can't wedge EventKit by running/being killed to the end.
-        status, matches = await _search_reminder_notes_live(query, include_completed)
+        # Seed with the title matches the index already knows (free and complete)
+        # so search_notes is never a subset of the default title search, then
+        # overlay the opt-in live note scan (which self-bounds to "ok"/"timeout").
+        # The live scan populates notes and adds body-only hits; merged by id it
+        # wins over the seed (#21).
+        seed_matches = _search_index.search(query, include_completed)
+        if not _search_index.is_built or _search_index.is_stale(_INDEX_TTL_SECONDS):
+            _kick_refresh()
+        status, live_matches = await _search_reminder_notes_live(
+            query, include_completed
+        )
+        matches = _merge_note_matches(seed_matches, live_matches)
     elif not _search_index.is_built:
         # Cold start: trigger a build and ask the caller to retry rather than
         # blocking on a scan that could exceed the client timeout. Startup
