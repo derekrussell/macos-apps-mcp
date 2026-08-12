@@ -140,6 +140,69 @@ def test_index_is_stale_uses_ttl_and_injected_now():
 
 
 # ---------------------------------------------------------------------------
+# Rebuild-vs-mutation race guard (issue #20)
+# ---------------------------------------------------------------------------
+
+def test_mutation_before_build_does_not_stamp_mutation_time():
+    # Not built yet: mutations are no-ops and must not arm the guard, or the
+    # first real scan would be discarded forever.
+    index = ReminderSearchIndex()
+    index.remove("x")
+    index.add("y", "T", "L", "", False)
+    index.edit("z", title="T")
+    assert index._last_mutation_at_monotonic == 0.0
+
+
+def test_applied_mutation_stamps_mutation_time():
+    index = _sample_index()
+    index._last_mutation_at_monotonic = 0.0  # reset after the build in _sample_index
+    index.remove("1")
+    assert index._last_mutation_at_monotonic > 0.0
+
+
+def test_replace_discards_scan_that_a_mutation_has_overtaken():
+    # A delete lands in-place at t=101, after a scan that started at t=100. The
+    # scan's snapshot still holds the deleted reminder; applying it would
+    # resurrect a phantom, so replace() must discard it.
+    index = _sample_index()
+    index.remove("1")
+    index._last_mutation_at_monotonic = 101.0  # mutation after scan start
+
+    applied = index.replace(
+        [
+            IndexedReminder("1", "Buy milk", "Shopping", None, False),  # stale
+            IndexedReminder("2", "Buy bread", "Shopping", "2026-08-02", False),
+        ],
+        not_mutated_since=100.0,
+    )
+
+    assert applied is False
+    # The in-place removal is preserved — no phantom served.
+    assert index.search("buy milk", include_completed=True) == []
+
+
+def test_replace_applies_when_no_mutation_since_scan_start():
+    index = _sample_index()
+    index._last_mutation_at_monotonic = 50.0  # last mutation well before the scan
+
+    applied = index.replace(
+        [IndexedReminder("9", "Fresh eggs", "Shopping", None, False)],
+        not_mutated_since=100.0,
+    )
+
+    assert applied is True
+    assert index.search("eggs", include_completed=True)[0]["id"] == "9"
+
+
+def test_replace_without_guard_is_unconditional():
+    # Back-compat: omitting not_mutated_since always replaces.
+    index = _sample_index()
+    index._last_mutation_at_monotonic = 999.0
+    applied = index.replace([IndexedReminder("9", "Eggs", "Shopping", None, False)])
+    assert applied is True
+
+
+# ---------------------------------------------------------------------------
 # handle() dispatch and async handlers (faked _run_script)
 # ---------------------------------------------------------------------------
 
@@ -292,3 +355,46 @@ def test_handle_delete_removes_from_index(monkeypatch):
 
     asyncio.run(reminders.handle("reminder_delete", {"reminder_id": "1"}))
     assert index.search("milk", include_completed=True) == []
+
+
+# ---------------------------------------------------------------------------
+# _build_index wiring for the race guard (issue #20)
+# ---------------------------------------------------------------------------
+
+def test_build_index_discards_scan_when_a_mutation_raced_it(monkeypatch):
+    # Simulate a delete that lands WHILE the background scan is in flight: the
+    # scan still returns the (now-deleted) reminder, but the guard must stop it
+    # from resurrecting the phantom. (Asserts live outside fake_run because
+    # _build_index swallows exceptions.)
+    index = ReminderSearchIndex()
+    index.replace([IndexedReminder("1", "Old task", "L", None, False)])
+    monkeypatch.setattr(reminders, "_search_index", index)
+
+    captured = {}
+
+    async def fake_run(action, *args, **kwargs):
+        captured["action"] = action
+        index.remove("1")  # mutation lands mid-scan
+        index._last_mutation_at_monotonic = time.monotonic() + 100  # after scan start
+        return "1|Old task|L||false"  # snapshot predates the delete
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+
+    asyncio.run(reminders._build_index())
+
+    assert captured["action"] == "build_index"
+    assert index.search("old task", include_completed=True) == []  # no phantom
+
+
+def test_build_index_applies_scan_when_no_mutation_raced_it(monkeypatch):
+    index = ReminderSearchIndex()
+    monkeypatch.setattr(reminders, "_search_index", index)
+
+    async def fake_run(action, *args, **kwargs):
+        return "9|Fresh task|L||false"
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+
+    asyncio.run(reminders._build_index())
+
+    assert index.search("fresh", include_completed=True)[0]["id"] == "9"
