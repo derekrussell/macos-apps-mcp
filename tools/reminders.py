@@ -372,12 +372,26 @@ class ReminderSearchIndex:
     Holds no I/O logic of its own, so it can be unit-tested in isolation: build
     it with ``replace``, mutate it with ``add``/``edit``/``remove``, and query
     it with ``search``.
+
+    A background rebuild and an in-place mutation can race: the rebuild snapshots
+    the store, then a mutation updates the index, then the rebuild's ``replace``
+    lands — clobbering the mutation with the pre-mutation snapshot (issue #20).
+    To prevent that, mutations stamp ``_last_mutation_at_monotonic`` and a rebuild
+    passes the time its scan STARTED to ``replace`` as ``not_mutated_since``; a
+    scan that a mutation has overtaken is discarded rather than applied.
     """
 
     def __init__(self) -> None:
         # None means "never built yet"; an empty list means "built and empty".
         self._reminders: list[IndexedReminder] | None = None
         self._built_at_monotonic: float = 0.0
+        # Monotonic time of the most recent applied mutation, for the rebuild
+        # race guard above. 0.0 means "no mutation since process start".
+        self._last_mutation_at_monotonic: float = 0.0
+
+    def _mark_mutated(self) -> None:
+        """Stamp the time of an applied mutation (for the rebuild race guard)."""
+        self._last_mutation_at_monotonic = time.monotonic()
 
     @property
     def is_built(self) -> bool:
@@ -393,12 +407,33 @@ class ReminderSearchIndex:
         current_time = time.monotonic() if now is None else now
         return (current_time - self._built_at_monotonic) >= ttl_seconds
 
-    def replace(self, reminders, built_at: float | None = None) -> None:
-        """Replace the whole index with a freshly scanned set of reminders."""
+    def replace(
+        self,
+        reminders,
+        built_at: float | None = None,
+        *,
+        not_mutated_since: float | None = None,
+    ) -> bool:
+        """Replace the whole index with a freshly scanned set of reminders.
+
+        Returns True if the scan was applied. When ``not_mutated_since`` is given
+        (the monotonic time the scan STARTED) and a mutation has landed since
+        then, the scan is stale — it may have snapshotted the store before that
+        mutation, so applying it would clobber the in-place update and resurrect a
+        deleted reminder or drop a created one (issue #20). In that case the scan
+        is discarded and False is returned, leaving the current (mutation-applied)
+        index untouched; it stays stale, so the next search re-triggers a refresh.
+        """
+        if (
+            not_mutated_since is not None
+            and self._last_mutation_at_monotonic > not_mutated_since
+        ):
+            return False
         self._reminders = list(reminders)
         self._built_at_monotonic = (
             time.monotonic() if built_at is None else built_at
         )
+        return True
 
     def add(
         self,
@@ -411,6 +446,7 @@ class ReminderSearchIndex:
         """Add a newly created reminder, if the index has been built."""
         if self._reminders is None:
             return
+        self._mark_mutated()
         self._reminders.append(IndexedReminder(
             id=reminder_id,
             title=title,
@@ -423,6 +459,7 @@ class ReminderSearchIndex:
         """Drop a deleted reminder, if the index has been built."""
         if self._reminders is None:
             return
+        self._mark_mutated()
         self._reminders = [
             reminder for reminder in self._reminders
             if reminder.id != reminder_id
@@ -444,6 +481,7 @@ class ReminderSearchIndex:
         """
         if self._reminders is None:
             return
+        self._mark_mutated()
         for reminder in self._reminders:
             if reminder.id != reminder_id:
                 continue
@@ -512,9 +550,16 @@ async def _build_index() -> None:
     Runs off the client hot path, so a slow or failed scan costs freshness, not
     a user-facing timeout. The previous index is kept on failure so the next
     refresh can retry.
+
+    The scan-start time is captured BEFORE the scan and handed to replace() as a
+    race guard: if a mutation lands while this scan is in flight, the (possibly
+    pre-mutation) snapshot is discarded rather than clobbering the in-place update
+    (issue #20). A discarded scan leaves the index stale, so the next search
+    re-triggers a refresh.
     """
     global _refresh_in_progress
     try:
+        scan_started_at = time.monotonic()
         raw = await _run_script(
             "build_index", timeout=_INDEX_BUILD_TIMEOUT_SECONDS
         )
@@ -523,7 +568,7 @@ async def _build_index() -> None:
             (_parse_index_line(line) for line in raw.splitlines())
             if parsed is not None
         ]
-        _search_index.replace(reminders)
+        _search_index.replace(reminders, not_mutated_since=scan_started_at)
     except Exception:
         # Keep serving the previous index; the next refresh will retry.
         pass
