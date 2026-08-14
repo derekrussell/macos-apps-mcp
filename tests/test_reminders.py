@@ -9,6 +9,7 @@ tested in test_responses.py.
 import asyncio
 import json
 import time
+from datetime import datetime
 
 import pytest
 
@@ -268,6 +269,139 @@ def test_handle_completed_stats_warming_when_index_not_built(monkeypatch):
     assert payload["status"] == "warming"
     assert payload["lists"] == []
     assert refreshed  # a background build was kicked
+
+
+# ---------------------------------------------------------------------------
+# completed_stats age breakdown (issue #24 Tier 2)
+# ---------------------------------------------------------------------------
+
+def test_parse_completion_iso_handles_valid_empty_and_junk():
+    assert reminders._parse_completion_iso("2026-08-12T09:00:00") == datetime(2026, 8, 12, 9, 0, 0)
+    assert reminders._parse_completion_iso(None) is None
+    assert reminders._parse_completion_iso("") is None
+    assert reminders._parse_completion_iso("not-a-date") is None
+
+
+def test_bucket_completed_ages_nests_windows_counts_undatable_and_oldest():
+    now = datetime(2026, 8, 12, 12, 0, 0)
+    rows = [
+        ("Shopping", "2024-07-01T09:00:00"),  # ~2y  -> 30d, 90d, 365d
+        ("Shopping", "2026-06-01T09:00:00"),  # ~72d -> 30d only
+        ("Shopping", "2026-08-10T09:00:00"),  # 2d   -> none
+        ("Shopping", None),                    # undatable
+        ("Routines", "2025-01-01T00:00:00"),  # >1y  -> all three
+    ]
+    buckets = reminders._bucket_completed_ages(rows, now)
+    shopping = buckets["Shopping"]
+    assert shopping["older_than"] == {"30d": 2, "90d": 1, "365d": 1}
+    assert shopping["undatable_completed"] == 1
+    assert shopping["oldest_completed"] == "2024-07-01T09:00:00"
+    assert buckets["Routines"]["older_than"] == {"30d": 1, "90d": 1, "365d": 1}
+
+
+def test_scan_completed_ages_parses_status_and_rows(monkeypatch):
+    async def fake_run(action, *args, **kwargs):
+        assert action == "completed_age_scan"
+        return (
+            "timeout\n"
+            "Shopping|2026-01-01T00:00:00\n"
+            "Routines|\n"          # undatable -> None
+            "malformed-no-pipe"    # skipped
+        )
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    status, rows = asyncio.run(reminders._scan_completed_ages("all"))
+    assert status == "timeout"
+    assert rows == [("Shopping", "2026-01-01T00:00:00"), ("Routines", None)]
+
+
+def test_handle_completed_stats_age_breakdown_annotates_lists(monkeypatch):
+    index = ReminderSearchIndex()
+    index.replace([
+        IndexedReminder("1", "a", "Shopping", None, True),
+        IndexedReminder("2", "b", "Shopping", None, False),
+    ], built_at=time.monotonic())
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    captured = {}
+
+    async def fake_run(action, *args, **kwargs):
+        captured["action"] = action
+        captured["filter"] = args[1]
+        return "ok\nShopping|2024-01-01T00:00:00\nShopping|"
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_completed_stats", {"list": "Shopping", "age_breakdown": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    assert captured["action"] == "completed_age_scan"
+    assert captured["filter"] == "Shopping"  # single-list filter forwarded
+    assert payload["source"] == "index+scan"
+    entry = payload["lists"][0]
+    assert entry["completed_older_than"]["365d"] == 1
+    assert entry["undatable_completed"] == 1
+    assert entry["oldest_completed"] == "2024-01-01T00:00:00"
+
+
+def test_handle_completed_stats_age_breakdown_timeout_annotates_and_warns(monkeypatch):
+    index = ReminderSearchIndex()
+    index.replace([IndexedReminder("1", "a", "Shopping", None, True)], built_at=time.monotonic())
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    async def fake_run(action, *args, **kwargs):
+        return "timeout\n"  # budget hit before any rows
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_completed_stats", {"age_breakdown": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    assert payload["status"] == "timeout"
+    assert "partial" in payload["message"]
+    # Lists are still annotated (with zeros) even when the scan returned nothing.
+    assert payload["lists"][0]["completed_older_than"] == {"30d": 0, "90d": 0, "365d": 0}
+
+
+def test_handle_completed_stats_echoes_requested_list(monkeypatch):
+    index = ReminderSearchIndex()
+    index.replace([IndexedReminder("1", "a", "Shopping", None, True)], built_at=time.monotonic())
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    result = asyncio.run(reminders.handle(
+        "reminder_completed_stats", {"list": "Groceries"}
+    ))
+    payload = json.loads(result[0].text)
+    assert payload["requested_list"] == "Groceries"
+    assert payload["lists"] == []  # unknown or empty — indistinguishable, hence the echo
+
+
+def test_handle_completed_stats_age_breakdown_skips_scan_when_no_lists(monkeypatch):
+    index = ReminderSearchIndex()
+    index.replace([IndexedReminder("1", "a", "Shopping", None, True)], built_at=time.monotonic())
+    monkeypatch.setattr(reminders, "_search_index", index)
+    monkeypatch.setattr(reminders, "_kick_refresh", lambda: None)
+
+    calls = {"n": 0}
+
+    async def fake_run(action, *args, **kwargs):
+        calls["n"] += 1
+        return "ok\n"
+
+    monkeypatch.setattr(reminders, "_run_script", fake_run)
+    result = asyncio.run(reminders.handle(
+        "reminder_completed_stats", {"list": "Groceries", "age_breakdown": True}
+    ))
+    payload = json.loads(result[0].text)
+
+    assert calls["n"] == 0  # nothing to annotate -> no live scan
+    assert payload["source"] == "index"
+    assert payload["lists"] == []
 
 
 # ---------------------------------------------------------------------------

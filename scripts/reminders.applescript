@@ -11,6 +11,9 @@
 --   search         <query> <include_completed> <search_notes> <time_budget>
 --                                                      -> status\nid|title|due_date|notes|is_completed|list\n...
 --                                                         (status = "ok" | "timeout"; time_budget in seconds)
+--   completed_age_scan <time_budget> <list_filter>
+--                                                      -> status\nlist|completion_date\n...   (completed only;
+--                                                         list_filter is a list name or "all"; empty date = undatable)
 --   build_index                                        -> id|title|list|due_date|is_completed\n...   (all lists)
 --   create         <title> <list> <due_date> <notes>   -> reminder_id|resolved_list
 --   complete       <reminder_id>                       -> (no output)
@@ -45,6 +48,10 @@ on run argv
         set searchNotes to item 4 of argv
         set timeBudget to (item 5 of argv) as integer
         return search_reminders(searchQuery, includeCompleted, searchNotes, timeBudget)
+    else if action is "completed_age_scan" then
+        set timeBudget to (item 2 of argv) as integer
+        set listFilter to item 3 of argv
+        return completed_age_scan(timeBudget, listFilter)
     else if action is "build_index" then
         return build_index()
     else if action is "create" then
@@ -345,6 +352,91 @@ on match_and_format(reminderProperties, listName, searchQuery, includeCompleted,
     set completedField to my boolean_to_text(reminderIsCompleted)
     return (reminderId as text) & "|" & (util's sanitise_field(reminderName)) & "|" & dueDateField & "|" & (util's sanitise_field(reminderBody)) & "|" & completedField & "|" & listName & linefeed
 end match_and_format
+
+
+-- Scan completed reminders and emit their completion dates, for the Python side
+-- to bucket by age (issue #24 Tier 2). Output: a status line ("ok" | "timeout")
+-- followed by one line per COMPLETED reminder: list|completion_date (the date is
+-- ISO 8601, or empty when the reminder has no completion date). Incomplete
+-- reminders emit nothing.
+--
+-- Reading completion dates across a large account is the same heavy scan that
+-- wedges EventKit, so this uses the same self-bounding discipline as
+-- search_reminders: chunked atomic `properties` reads with a time budget checked
+-- between chunks, returning "timeout" with partial output rather than running (or
+-- being hard-killed) to the end. listFilter restricts the scan to one list (so a
+-- single-list age query does not spend the budget on other lists); "all" scans
+-- every list. An unknown single list resolves to nothing and returns "ok".
+on completed_age_scan(timeBudget, listFilter)
+    set budgetSeconds to timeBudget as integer
+
+    if (listFilter is "all") or (listFilter is "") then
+        tell application "Reminders"
+            set targetLists to every list
+        end tell
+    else
+        try
+            set targetLists to {resolve_list(listFilter)}
+        on error
+            return "ok" & linefeed
+        end try
+    end if
+
+    set scanStart to current date
+    set truncated to false
+    set output to ""
+
+    repeat with currentList in targetLists
+        tell application "Reminders"
+            set currentListName to name of currentList
+            set listReminderCount to count of reminders of currentList
+        end tell
+
+        set chunkStart to 1
+        repeat while chunkStart ≤ listReminderCount
+            if ((current date) - scanStart) ≥ budgetSeconds then
+                set truncated to true
+                exit repeat
+            end if
+
+            set chunkEnd to chunkStart + searchChunkSize - 1
+            if chunkEnd > listReminderCount then set chunkEnd to listReminderCount
+
+            tell application "Reminders"
+                set chunkProperties to properties of (reminders chunkStart thru chunkEnd of currentList)
+            end tell
+
+            repeat with reminderProperties in chunkProperties
+                set output to output & my format_completed_age_line(contents of reminderProperties, currentListName)
+            end repeat
+
+            set chunkStart to chunkEnd + 1
+        end repeat
+
+        if truncated then exit repeat
+    end repeat
+
+    if truncated then
+        return "timeout" & linefeed & output
+    else
+        return "ok" & linefeed & output
+    end if
+end completed_age_scan
+
+
+-- For a COMPLETED reminder emit "list|completion_date" (ISO, or empty when the
+-- reminder has no completion date). Incomplete reminders emit nothing. Every
+-- field is read from the one local properties record, so completed-ness and the
+-- date belong to the same reminder.
+on format_completed_age_line(reminderProperties, listName)
+    tell application "Reminders"
+        set reminderIsCompleted to completed of reminderProperties
+        set reminderCompletionDate to completion date of reminderProperties
+    end tell
+    if not reminderIsCompleted then return ""
+    set dateField to my format_due_date(reminderCompletionDate)
+    return (util's sanitise_field(listName)) & "|" & dateField & linefeed
+end format_completed_age_line
 
 
 -- Build the search index of every reminder across all lists, for the Python

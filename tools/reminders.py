@@ -32,6 +32,7 @@ Note:
 import asyncio
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from mcp.types import TextContent, Tool
@@ -64,6 +65,10 @@ _NOTES_SCAN_BUDGET_SECONDS = 40
 # hard kill can't interrupt an in-flight Apple event, which is what wedges).
 _NOTES_SCAN_TIMEOUT_MARGIN_SECONDS = 15
 
+# Age windows (days) the completed-bloat report buckets completed reminders into.
+# Nested by construction: "older than 30d" includes everything older than 90d/365d.
+_AGE_WINDOW_DAYS = (30, 90, 365)
+
 # ------------------------------------------------------------
 # Section B — Tool definitions
 # ------------------------------------------------------------
@@ -93,10 +98,18 @@ TOOLS: list[Tool] = [
             "index_age_seconds, lists, totals}, where lists is an array of "
             "{list, total, completed, incomplete, completed_pct} sorted with the "
             "most completed reminders first. Pass list to report a single list; "
-            "omit it (or pass 'all') for every list. Counts reflect the index, "
-            "which may lag a direct edit in the Reminders app by up to ~90s "
-            "(index_age_seconds shows its freshness). On a cold start it may "
-            "return status 'warming' with an empty lists array — retry shortly."
+            "omit it (or pass 'all') for every list. The requested list is echoed "
+            "back as requested_list; an empty lists array means the list is empty "
+            "OR does not exist. Counts reflect the index, which may lag a direct "
+            "edit in the Reminders app by up to ~90s (index_age_seconds shows its "
+            "freshness). On a cold start it may return status 'warming' with an "
+            "empty lists array — retry shortly. "
+            "Set age_breakdown to true to also add, per list, completed_older_than "
+            "({'30d','90d','365d'} counts by completion date), oldest_completed, "
+            "and undatable_completed. That runs a live scan (slower, time-budgeted) "
+            "and may return status 'timeout' with partial age counts — query a "
+            "single list for complete numbers; the default report stays index-only "
+            "and instant."
         ),
         inputSchema={
             "type": "object",
@@ -105,6 +118,11 @@ TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Name of a single list to report, or 'all' for every list. Defaults to 'all'.",
                     "default": "all",
+                },
+                "age_breakdown": {
+                    "type": "boolean",
+                    "description": "If true, add a completion-date age breakdown per list via a live scan (slower, may time out). Defaults to false (instant, index-only).",
+                    "default": False,
                 },
             },
             "required": [],
@@ -704,6 +722,7 @@ async def _list_lists_with_retry() -> str:
 async def _handle_completed_stats(arguments: dict) -> list[TextContent]:
     requested_list = arguments.get("list", "all")
     target_list = None if requested_list in ("all", "", None) else requested_list
+    age_breakdown = bool(arguments.get("age_breakdown", False))
 
     stats = _search_index.completed_stats(target_list)
     if stats is None:
@@ -713,6 +732,7 @@ async def _handle_completed_stats(arguments: dict) -> list[TextContent]:
         return json_content({
             "status": "warming",
             "source": "index",
+            "requested_list": requested_list,
             "lists": [],
             "totals": {"completed": 0, "incomplete": 0},
             "message": "Reminder index is building; retry in a few seconds.",
@@ -722,16 +742,46 @@ async def _handle_completed_stats(arguments: dict) -> list[TextContent]:
     if _search_index.is_stale(_INDEX_TTL_SECONDS):
         _kick_refresh()
 
-    return json_content({
+    # requested_list is echoed so the caller can tell an empty result apart from
+    # what it asked for: an empty lists array means "empty OR no such list" (the
+    # index can't distinguish a real empty list from an absent one).
+    response = {
         "status": "ok",
         "source": "index",
+        "requested_list": requested_list,
         "index_age_seconds": round(_search_index.age_seconds()),
         "lists": stats,
         "totals": {
             "completed": sum(entry["completed"] for entry in stats),
             "incomplete": sum(entry["incomplete"] for entry in stats),
         },
-    })
+    }
+
+    # Opt-in Tier 2: augment each list with a completion-date age breakdown from a
+    # bounded live scan. Only scan when there are lists to annotate — an unknown or
+    # empty target yields no rows to enrich, so it stays index-only and instant.
+    if age_breakdown and stats:
+        scan_status, rows = await _scan_completed_ages(
+            target_list if target_list is not None else "all"
+        )
+        buckets = _bucket_completed_ages(rows, datetime.now())
+        for entry in response["lists"]:
+            age = buckets.get(entry["list"])
+            entry["completed_older_than"] = (
+                age["older_than"] if age
+                else {f"{days}d": 0 for days in _AGE_WINDOW_DAYS}
+            )
+            entry["oldest_completed"] = age["oldest_completed"] if age else None
+            entry["undatable_completed"] = age["undatable_completed"] if age else 0
+        response["source"] = "index+scan"
+        response["status"] = scan_status
+        if scan_status == "timeout":
+            response["message"] = (
+                "Age breakdown scan hit its time budget; some lists' age counts "
+                "are partial. Query a single list for complete numbers."
+            )
+
+    return json_content(response)
 
 
 async def _handle_get(arguments: dict) -> list[TextContent]:
@@ -779,6 +829,78 @@ def _merge_note_matches(
     for match in live_matches:
         merged[match["id"]] = match
     return list(merged.values())
+
+
+def _parse_completion_iso(completion_iso: str | None) -> datetime | None:
+    """Parse an ISO completion date, or None if it is absent/unparseable."""
+    if not completion_iso:
+        return None
+    try:
+        return datetime.fromisoformat(completion_iso)
+    except ValueError:
+        return None
+
+
+def _bucket_completed_ages(
+    rows: list[tuple[str, str | None]],
+    now: datetime,
+    window_days: tuple[int, ...] = _AGE_WINDOW_DAYS,
+) -> dict[str, dict]:
+    """Bucket (list_name, completion_iso) rows by completion age, per list.
+
+    Returns ``{list_name: {"older_than": {"30d": n, ...}, "oldest_completed":
+    iso|None, "undatable_completed": n}}``. A row whose date is missing or
+    unparseable counts as undatable. Windows nest, so an item older than 365d also
+    counts under 90d and 30d. ``now`` is injectable for deterministic tests.
+    """
+    cutoffs = {f"{days}d": now - timedelta(days=days) for days in window_days}
+    per_list: dict[str, dict] = {}
+    for list_name, completion_iso in rows:
+        entry = per_list.setdefault(list_name, {
+            "older_than": {f"{days}d": 0 for days in window_days},
+            "oldest_completed": None,
+            "undatable_completed": 0,
+        })
+        completed_at = _parse_completion_iso(completion_iso)
+        if completed_at is None:
+            entry["undatable_completed"] += 1
+            continue
+        for key, cutoff in cutoffs.items():
+            if completed_at < cutoff:
+                entry["older_than"][key] += 1
+        # Same-width ISO strings sort chronologically as text.
+        if (entry["oldest_completed"] is None
+                or completion_iso < entry["oldest_completed"]):
+            entry["oldest_completed"] = completion_iso
+    return per_list
+
+
+async def _scan_completed_ages(
+    list_filter: str,
+) -> tuple[str, list[tuple[str, str | None]]]:
+    """Live-scan completed reminders' completion dates (issue #24 Tier 2).
+
+    Returns (status, rows) where status is "ok" or "timeout" (partial) and each
+    row is (list_name, completion_iso_or_None). Bounded by the same budget/timeout
+    as the note scan so it cannot wedge EventKit; list_filter is a list name or
+    "all". The osascript timeout is set above the budget so the script's own
+    cooperative abort fires before a hard kill.
+    """
+    raw = await _run_script(
+        "completed_age_scan",
+        str(_NOTES_SCAN_BUDGET_SECONDS),
+        list_filter,
+        timeout=_NOTES_SCAN_BUDGET_SECONDS + _NOTES_SCAN_TIMEOUT_MARGIN_SECONDS,
+    )
+    lines = raw.splitlines() if raw else []
+    status = lines[0] if lines else "ok"
+    rows: list[tuple[str, str | None]] = []
+    for line in lines[1:]:
+        list_name, separator, completion_iso = line.partition("|")
+        if not separator:
+            continue
+        rows.append((list_name, completion_iso or None))
+    return status, rows
 
 
 async def _search_reminder_notes_live(

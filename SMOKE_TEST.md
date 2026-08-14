@@ -51,7 +51,7 @@ folder isn't connected to its session), save it somewhere it can and move it aft
 | 5 | `reminder_update` | Update the scratch's title and notes. | Returns promptly (no timeout); a follow-up `reminder_get` shows both applied. |
 | 6 | `reminder_complete` | Complete the scratch. | Marked completed; visible only with `include_completed:true`. |
 | 7 | `reminder_delete` | Delete the scratch. | Gone. A `reminder_list_lists` now matches the step-1 count for that list (see count note below). |
-| 8 | `reminder_completed_stats` | Report counts for all lists (default), then a single `list`. | Read-only, from the index (no scan): returns `{status, source:"index", index_age_seconds, lists, totals}`; `lists` sorted most-completed-first, each with `total`/`completed`/`incomplete`/`completed_pct`. Single-`list` filters to one row. Cold start may return `status:"warming"` — retry. Per list, `completed`+`incomplete` should equal that list's `reminder_list_lists` total. |
+| 8 | `reminder_completed_stats` | Report counts for all lists (default), then a single `list`. Then a single `list` with `age_breakdown:true`, and an unknown list name. | Read-only, from the index (no scan): returns `{status, source:"index", requested_list, index_age_seconds, lists, totals}`; `lists` sorted most-completed-first, each with `total`/`completed`/`incomplete`/`completed_pct`. Single-`list` filters to one row. Cold start may return `status:"warming"` — retry. Per list, `completed`+`incomplete` should equal that list's `reminder_list_lists` total. **`age_breakdown:true` (issue #24 Tier 2):** `source` becomes `index+scan` and each list gains `completed_older_than {30d,90d,365d}` (nested: 30d ≥ 90d ≥ 365d), `oldest_completed` (ISO or null), `undatable_completed`; a large all-lists scan may return `status:"timeout"` with partial age counts (query a single list for complete numbers) — it must **not** hang or wedge. **Unknown list:** `requested_list` echoes the name and `lists` is `[]` (empty is indistinguishable from absent); no scan runs. |
 
 **Count note (not a bug):** `reminder_list_lists` and `reminder_get(include_completed:true)`
 agree only when sampled at the same instant. Compare counts *before* create or *after*
@@ -103,8 +103,11 @@ that is just the scratch reminder.
   is a live scan that is slower on large accounts, but it is now **time-budgeted**: it
   returns partial results with `status:"timeout"` rather than hanging or wedging EventKit
   (issue #17), and it **seeds from the title index** so it is never a subset of the
-  default search (issue #21). **`mail_search` `body`** is still an unbounded live scan
-  that can time out on large mailboxes.
+  default search (issue #21). **`reminder_completed_stats` `age_breakdown:true`** is the
+  same kind of time-budgeted live scan (issue #24 Tier 2): it can return `status:"timeout"`
+  with partial age counts on a large all-lists request — query a single list for complete
+  numbers. **`mail_search` `body`** is still an unbounded live scan that can time out on
+  large mailboxes.
 - **`mail_get_messages` order** is Mail's native received-date order, not strictly the
   reported sent date; use `mail_search` with `since`/`until` for date-precise selection.
 - **Notes "Recently Deleted"** only appears when it contains notes.
