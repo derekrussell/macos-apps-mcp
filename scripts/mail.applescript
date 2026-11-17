@@ -16,7 +16,7 @@
 --   move            <message_id> <mailbox>         -> (no output)
 --   delete          <message_id>                   -> (no output)
 --   rename_mailbox  <mailbox> <new_name>           -> new account-qualified path
---   create_mailbox  <mailbox>                       -> "created|path" or "exists|path"
+--   create_mailbox  <mailbox>                      -> "created|path" or "exists|path"
 
 -- Shared handlers (sanitise_field, format_date, parse_iso_date), loaded once
 -- per invocation.
