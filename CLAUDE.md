@@ -5,6 +5,14 @@ to an MCP client (e.g. Claude Desktop) over stdio. Every operation is performed 
 invoking **AppleScript** through `osascript`. macOS-only; the server itself is
 platform-agnostic.
 
+This file is operational: commands, conventions, constraints. For *why* things
+are built this way, see `docs/architecture-decisions.md`. For *what to build
+next and in what order*, see the imported roadmap below. Check-in notes live in
+`docs/check-ins/`. Don't duplicate those docs here; point to them instead.
+
+@docs/build-roadmap.md
+@~/.claude/macos-apps-mcp-notes.md
+
 ## Architecture
 
 ```
@@ -70,6 +78,13 @@ config.py                  (empty)
   with `count`/`offset` pagination. Keep them consistent when editing.
 - **Pagination:** AppleScript slices `items startIdx thru endIdx` (1-indexed;
   Python offset is 0-based).
+- **Stay inside the current milestone.** See the imported roadmap for what's in
+  play. Don't reach ahead into a later milestone's work, even if it seems
+  convenient to bundle in.
+
+Personal working-style preferences are imported above from
+`~/.claude/macos-apps-mcp-notes.md`: a file outside this repo, never committed,
+and not something contributors need to see.
 
 ## Reminder search: background index (important)
 
