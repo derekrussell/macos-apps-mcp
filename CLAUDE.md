@@ -33,7 +33,6 @@ scripts/utilities.applescript  Shared AppleScript handlers, loaded once per invo
 tests/                     pytest suite covering the pure Python logic in isolation
                            (parsers, pagination, routing, the reminder index, and the
                            handlers via a faked _run_script). Run: pytest.
-config.py                  (empty)
 ```
 
 - **Dispatch:** `server.py` routes by prefix — `mail_` → `tools/mail.py`, `notes_` →
